@@ -1,24 +1,45 @@
+/* General body and layout styles */
 body {
     font-family: sans-serif;
-    margin: 20px;
+    margin: 20px auto; /* Top/bottom margin 20px, auto left/right for centering */
     line-height: 1.6;
+    max-width: 900px;   /* Max width for main content for readability on wide screens */
+    padding: 0 20px;    /* Padding on sides, especially if screen is narrower than max-width */
+    background-color: #f9f9f9; /* Light background for the page */
+    color: #333; /* Default text color */
 }
 
+/* Heading styles */
 h1 {
     color: #333;
     border-bottom: 2px solid #eee;
     padding-bottom: 10px;
+    margin-top: 0; /* Remove default top margin for h1 if body has margin */
 }
 
 h2 {
     color: #555;
     margin-top: 30px;
+    border-bottom: 1px solid #f0f0f0;
+    padding-bottom: 5px;
 }
 
+/* Paragraph styles (mainly for descriptions) */
+p {
+    margin-bottom: 1em;
+}
+
+/* List styles (mainly for connections) */
 ul {
     list-style-type: square;
+    padding-left: 20px; /* Indent list a bit */
 }
 
+ul li {
+    margin-bottom: 0.5em; /* Space out connection items */
+}
+
+/* Link styles */
 a {
     color: #007bff;
     text-decoration: none;
@@ -26,27 +47,51 @@ a {
 
 a:hover {
     text-decoration: underline;
+    color: #0056b3;
 }
 
-/* Minimap styles */
+/* Minimap container and table styles */
+#minimap_placeholder {
+    margin-top: 30px;       /* More space above minimap */
+    display: flex;          /* Use flexbox to allow centering the table */
+    justify-content: center;/* Center the table horizontally */
+    overflow-x: auto;       /* Add horizontal scroll if table is too wide */
+    padding-bottom: 10px;   /* Space if scrollbar appears */
+}
+
 #minimap_placeholder table {
     border-collapse: collapse;
-    margin-top: 20px;
+    /* margin-top: 20px; -- Removed as #minimap_placeholder handles top margin */
+    border: 1px solid #ddd; /* Outer border for the table itself */
 }
 
 #minimap_placeholder td {
-    border: 1px solid #ccc;
-    width: 40px; /* Adjust as needed */
-    height: 40px; /* Adjust as needed */
+    border: 1px solid #ccc; /* Border for cells */
+    width: 30px;            /* Slightly smaller cell width */
+    height: 30px;           /* Slightly smaller cell height */
     text-align: center;
     vertical-align: middle;
-    font-size: 0.8em;
+    font-size: 0.7em;       /* Smaller font size within minimap cells */
+    padding: 2px;           /* Reduced padding within cells */
+    min-width: 30px;        /* Ensure cells don't collapse too much if content is small */
 }
 
-/* Style for the current room in the minimap - already handled inline, but a class could be used too */
-/* For example, if generate_minimap added <td class="current_room">...</td>
-.current_room {
-    background-color: yellow;
+/* Specific style for the current room in the minimap */
+#minimap_placeholder td[style*="background-color: yellow"] { /* More specific selector for yellow cells */
     font-weight: bold;
+    border: 2px solid #adad00; /* Darker yellow/gold border for current room */
 }
-*/
+
+/* Style for linked rooms in the minimap */
+#minimap_placeholder td a {
+    display: block; /* Make link fill the cell for easier clicking */
+    width: 100%;
+    height: 100%;
+    line-height: 26px; /* Adjust to vertically center based on new height and padding */
+    color: #337ab7;
+}
+
+#minimap_placeholder td a:hover {
+    background-color: #f0f0f0; /* Slight hover effect on minimap cells */
+    text-decoration: none;
+}
