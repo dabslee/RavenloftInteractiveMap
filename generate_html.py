@@ -1,10 +1,38 @@
 import os
-from castle_data import castle_rooms # This now loads from parsed_rooms.json
-import json # Though not strictly needed in this script if castle_data handles it
+from castle_data import castle_rooms
+import json
+
+import json
+
+# Load all room data from JSON for floor mapping and minimap generation
+all_rooms_details = {}
+room_id_to_floor = {}
+try:
+    with open('parsed_rooms.json', 'r', encoding='utf-8') as json_file:
+        rooms_list = json.load(json_file)
+    for room_detail in rooms_list:
+        all_rooms_details[room_detail['id']] = room_detail
+        coords = room_detail.get('coordinates')
+        if isinstance(coords, list) and len(coords) == 2:
+            room_id_to_floor[room_detail['id']] = coords[1]  # Y-coordinate as floor identifier
+        else:
+            # Fallback for rooms with no/invalid coordinates, assign a distinct floor
+            room_id_to_floor[room_detail['id']] = coords[0] if isinstance(coords, list) and len(coords) > 0 else -99999
+except FileNotFoundError:
+    print("Error: parsed_rooms.json not found. Minimap filtering by floor will not work correctly.")
+    # Populate with castle_rooms if it's the fallback from castle_data.py
+    if 'castle_rooms' in globals() and isinstance(castle_rooms, dict):
+        all_rooms_details = castle_rooms
+        for r_id_cr, r_data_cr in castle_rooms.items():
+            coords_cr = r_data_cr.get("coordinates")
+            if isinstance(coords_cr, list) and len(coords_cr) == 2:
+                room_id_to_floor[r_id_cr] = coords_cr[1]
+            else:
+                room_id_to_floor[r_id_cr] = coords_cr[0] if isinstance(coords_cr, list) and len(coords_cr) > 0 else -99999
 
 # Create html_map directory if it doesn't exist
-if not os.path.exists("html_map"):
-    os.makedirs("html_map")
+if not os.path.exists("/tmp/html_map"):
+    os.makedirs("/tmp/html_map")
 
 # 1. Determine Global Grid Boundaries from all rooms
 all_coords = []
@@ -28,17 +56,19 @@ global_grid_bounds = (min_x, max_x, min_y, max_y)
 
 
 # 2. Minimap Generation Function
-def generate_minimap(current_room_id, all_rooms_data_for_minimap, grid_bounds_for_minimap):
+def generate_minimap(current_room_id, minimap_room_data, grid_bounds_for_minimap, current_floor_id, room_to_floor_mapping_dict):
     p_min_x, p_max_x, p_min_y, p_max_y = grid_bounds_for_minimap
     minimap_html = '<table border="1" style="border-collapse: collapse; margin: 10px;">\n'
 
     coord_to_room = {}
-    if all_rooms_data_for_minimap:
-        for r_id, data in all_rooms_data_for_minimap.items():
-            coords = data.get("coordinates")
-            if isinstance(coords, (list, tuple)) and len(coords) == 2 : # Ensure coords are valid tuple/list
-                 # Ensure coordinates are tuples for dictionary keys
-                coord_to_room[tuple(coords)] = r_id
+    if minimap_room_data:
+        for r_id, data in minimap_room_data.items():
+            # Filter rooms by the current floor
+            if room_to_floor_mapping_dict.get(r_id) == current_floor_id:
+                coords = data.get("coordinates")
+                if isinstance(coords, (list, tuple)) and len(coords) == 2 : # Ensure coords are valid tuple/list
+                     # Ensure coordinates are tuples for dictionary keys
+                    coord_to_room[tuple(coords)] = r_id
             # else:
                 # print(f"Warning (minimap): Room {r_id} has invalid coords for minimap: {coords}")
 
@@ -83,11 +113,11 @@ else:
 for room_id, room_data in rooms_to_process.items(): # Iterate over all rooms in castle_rooms
     # 3. Integration into HTML Generation: Call generate_minimap with full castle_rooms for all_rooms_data
     # and with global_grid_bounds
-    minimap_content = generate_minimap(room_id, castle_rooms, global_grid_bounds)
+    current_room_actual_floor = room_id_to_floor.get(room_id, -99999)
+    minimap_content = generate_minimap(room_id, all_rooms_details, global_grid_bounds, current_room_actual_floor, room_id_to_floor)
 
     room_name = room_data.get('name', 'N/A')
-    description_raw = room_data.get('description', 'No description available.')
-    description_html = description_raw.replace('\n', '<br>') # Handle newlines for HTML
+    description_html = room_data.get('description', 'No description available.') # Directly use HTML from parsed data
     connections = room_data.get('connections', {})
 
     html_content = f"""<!DOCTYPE html>
@@ -99,7 +129,7 @@ for room_id, room_data in rooms_to_process.items(): # Iterate over all rooms in 
 <body>
     <h1>{room_name}</h1>
     <img src="../images/map_room_default.png" alt="Map Room Image" class="room-image">
-    <p>{description_html}</p>
+    {description_html}
     <h2>Connections</h2>
 """
     if connections:
@@ -116,7 +146,7 @@ for room_id, room_data in rooms_to_process.items(): # Iterate over all rooms in 
 </body>
 </html>
 """
-    filepath = os.path.join("html_map", f"{room_id}.html")
+    filepath = os.path.join("/tmp/html_map", f"{room_id}.html")
     try:
         with open(filepath, "w", encoding='utf-8') as f:
             f.write(html_content)

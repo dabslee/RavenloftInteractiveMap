@@ -1,5 +1,6 @@
 import re
 import json
+import markdown2
 
 def parse_markdown_to_json(markdown_file_path, json_file_path):
     with open(markdown_file_path, 'r', encoding='utf-8') as f:
@@ -69,7 +70,8 @@ def parse_markdown_to_json(markdown_file_path, json_file_path):
         if major_section_match:
             # Finalize previous room if any, before switching major section
             if current_room_data:
-                current_room_data["description"] = "\n".join(description_lines).strip()
+                raw_description = "\n".join(description_lines).strip()
+                current_room_data["description"] = markdown2.markdown(raw_description)
                 parsed_rooms.append(current_room_data)
                 current_room_data = None
                 description_lines = []
@@ -82,7 +84,8 @@ def parse_markdown_to_json(markdown_file_path, json_file_path):
 
         elif room_match:
             if current_room_data: # Save previous room
-                current_room_data["description"] = "\n".join(description_lines).strip()
+                raw_description = "\n".join(description_lines).strip()
+                current_room_data["description"] = markdown2.markdown(raw_description)
                 parsed_rooms.append(current_room_data)
 
             description_lines = []
@@ -125,9 +128,11 @@ def parse_markdown_to_json(markdown_file_path, json_file_path):
                 # This logic might need refinement if sub-headings should fully terminate all parsing for a room.
 
             # Add to current room's description lines (even if it's a sub-heading line, for connection parsing)
-            cleaned_line = line.replace(">>", "").strip()
-            if cleaned_line or line.strip() == ">>": # Keep blockquote context if line was just ">>"
-                 description_lines.append(line.replace(">>", "").strip()) # Store cleaned line for description
+            # Store raw markdown lines for later conversion
+            if not stop_phrases_regex.match(line) or room_heading_regex.match(line) or major_section_header_regex.match(line):
+                 description_lines.append(line) # Store original line for markdown conversion
+            elif stop_phrases_regex.match(line): # if it's a stop phrase but not a room/major heading
+                 description_lines.append(line) # still include it for now, markdown converter will handle it.
 
             # Connection Parsing (on the original line for context)
             sentences = re.split(r'((?:[^.!?]|[.!?](?!\s|$))+[.!?])', line)
@@ -167,7 +172,8 @@ def parse_markdown_to_json(markdown_file_path, json_file_path):
                         except Exception: pass
 
     if current_room_data: # Add the last processed room
-        current_room_data["description"] = "\n".join(description_lines).strip()
+        raw_description = "\n".join(description_lines).strip()
+        current_room_data["description"] = markdown2.markdown(raw_description)
         parsed_rooms.append(current_room_data)
 
     with open(json_file_path, 'w', encoding='utf-8') as f:

@@ -1,0 +1,21 @@
+# Ignore generated HTML files
+html_map/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+
+# Ignore virtual environments
+venv/
+*.venv/
+env/
+.env
+
+# Ignore parsed JSON data if it's considered an artifact
+# parsed_rooms.json
+# Depending on the project, this might be committed or ignored.
+# For now, let's assume it should be committed as it's input to the next step.
+
+# Ignore OS-specific files
+.DS_Store
+Thumbs.db
