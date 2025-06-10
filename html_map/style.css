@@ -1,0 +1,52 @@
+body {
+    font-family: sans-serif;
+    margin: 20px;
+    line-height: 1.6;
+}
+
+h1 {
+    color: #333;
+    border-bottom: 2px solid #eee;
+    padding-bottom: 10px;
+}
+
+h2 {
+    color: #555;
+    margin-top: 30px;
+}
+
+ul {
+    list-style-type: square;
+}
+
+a {
+    color: #007bff;
+    text-decoration: none;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+/* Minimap styles */
+#minimap_placeholder table {
+    border-collapse: collapse;
+    margin-top: 20px;
+}
+
+#minimap_placeholder td {
+    border: 1px solid #ccc;
+    width: 40px; /* Adjust as needed */
+    height: 40px; /* Adjust as needed */
+    text-align: center;
+    vertical-align: middle;
+    font-size: 0.8em;
+}
+
+/* Style for the current room in the minimap - already handled inline, but a class could be used too */
+/* For example, if generate_minimap added <td class="current_room">...</td>
+.current_room {
+    background-color: yellow;
+    font-weight: bold;
+}
+*/
