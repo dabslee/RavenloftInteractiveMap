@@ -67,9 +67,10 @@ def generate_minimap(current_room_id, all_rooms_data_for_minimap, grid_bounds_fo
     # print("Warning: castle_rooms is empty or not loaded. No HTML will be generated.")
 
 # Process a defined subset of rooms
-limit_to_n_rooms = 25
+# limit_to_n_rooms = 25
 if castle_rooms:
-    rooms_to_process = dict(list(castle_rooms.items())[:limit_to_n_rooms])
+    # rooms_to_process = dict(list(castle_rooms.items())[:limit_to_n_rooms])
+    rooms_to_process = dict(list(castle_rooms.items()))
 else:
     rooms_to_process = {} # Should already be handled by previous check, but good for safety
 
