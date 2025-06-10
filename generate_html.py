@@ -98,6 +98,7 @@ for room_id, room_data in rooms_to_process.items(): # Iterate over all rooms in 
 </head>
 <body>
     <h1>{room_name}</h1>
+    <img src="../images/map_room_default.png" alt="Map Room Image" class="room-image">
     <p>{description_html}</p>
     <h2>Connections</h2>
 """

@@ -1,6 +1,6 @@
 # Chapter 4: Castle Ravenloft
 
-![](img/adventure/CoS/023-cos04-01.webp)
+![](images/023-cos04-01.webp)
 
 Castle Ravenloft was built atop the ruin of an older fortress by artisans, wizards, and workers loyal to Strahd's family. Strahd rewarded the castle's genius architect, Artimus, with a crypt in the castle's catacombs. The castle was named after Strahd's mother, Ravenovia, who also lies entombed below.
 
@@ -249,7 +249,7 @@ If the characters are moving quietly and not carrying light sources, they can tr
 
 Refer to map 2 of the castle for areas K1 through K6.
 
-![Map 2: Walls of Ravenloft](img/adventure/CoS/024-005.webp)![Player Version](img/adventure/CoS/024-005-player.webp)![Walls of Ravenloft (Battlemap; DM Version)](img/adventure/CoS/map-4.02-walls.webp)![Walls of Ravenloft (Battlemap; Player Version)](img/adventure/CoS/map-4.02-walls-player.webp)
+![Map 2: Walls of Ravenloft](images/024-005.webp)![Player Version](images/024-005-player.webp)![Walls of Ravenloft (Battlemap; DM Version)](images/map-4.02-walls.webp)![Walls of Ravenloft (Battlemap; Player Version)](images/map-4.02-walls-player.webp)
 ### K1. Front Courtyard
 
 As the characters enter the castle, the weather worsens. Dismal rain starts to fall, becoming a torrent within the hour. Lightning routinely lights the sky, followed by peals of thunder that make the castle shudder.
@@ -324,7 +324,7 @@ If your card reading indicates an encounter with **Strahd** in this area, he is 
 
 Refer to map 3 of the castle for areas K7 through K24.
 
-![Map 3: Main Floor](img/adventure/CoS/025-006.webp)![Player Version](img/adventure/CoS/025-006-player.webp)![Main Floor (Battlemap; DM Version)](img/adventure/CoS/map-4.03-main-floor.webp)![Main Floor (Battlemap; Player Version)](img/adventure/CoS/map-4.03-main-floor-player.webp)
+![Map 3: Main Floor](images/025-006.webp)![Player Version](images/025-006-player.webp)![Main Floor (Battlemap; DM Version)](images/map-4.03-main-floor.webp)![Main Floor (Battlemap; Player Version)](images/map-4.03-main-floor-player.webp)
 ### K7. Entry
 
 Read the following text if the characters approach from the courtyard (area K1):
@@ -393,7 +393,7 @@ The organ appears locked in place and immovable, but a character who makes a suc
 
 The food on the table is tasty, the wine delicious.
 
-![](img/adventure/CoS/026-cos04-04.webp)
+![](images/026-cos04-04.webp)
 
 ### K11. South Archers' Post
 
@@ -516,7 +516,7 @@ The tower, including the spiral staircase, is alive. When the characters set foo
 >>As you step onto the spiral staircase, a reddish light flares high overhead, then settles into a dull, pulsing red glow. You now see the full immensity of this tower. The spiral staircase circles up the tower's full height. The tower, sixty feet wide at its base, becomes narrower as it climbs. At the pinnacle of the hollow tower, a large crystal heart pulsates with red light. Above the heart, the stairs continue upward.
 >>
 
-![](img/adventure/CoS/027-cos04-05.webp)
+![](images/027-cos04-05.webp)
 
 Have the characters and the Heart of Sorrow roll initiative. If the characters leave the tower and later return, they can reroll initiative, but the heart's initiative count doesn't change.
 
@@ -572,7 +572,7 @@ The stairs lead to area K34.
 
 Refer to map 4 of the castle for areas K25 through K34.
 
-![Map 4: Court of the Count](img/adventure/CoS/028-007.webp)![Player Version](img/adventure/CoS/028-007-player.webp)![Court of the Count (Battlemap; DM Version)](img/adventure/CoS/map-4.04-court-revised.webp)![Court of the Count (Battlemap; Player Version)](img/adventure/CoS/map-4.04-court-player-revised.webp)
+![Map 4: Court of the Count](images/028-007.webp)![Player Version](images/028-007-player.webp)![Court of the Count (Battlemap; DM Version)](images/map-4.04-court-revised.webp)![Court of the Count (Battlemap; Player Version)](images/map-4.04-court-player-revised.webp)
 ### K25. Audience Hall
 
 >>Dim light from the courtyard falls into this great hall through the broken glass and iron latticework of a large window in the west wall. This immense room is a place of chilly, brooding darkness. Empty iron sconces dot the walls. Hundreds of dust-laden cobwebs drape the hall, hiding the ceiling from view. Directly across from the window stand a set of double doors in the east wall. Farther south, a single door also leads from the east wall. Staircases at both ends of the north wall lead down.
@@ -652,7 +652,7 @@ The staircase climbs from area K16 to area K28. It seems unstable but is sturdy.
 
 The figure is **Lief Lipsiege** (CE male human **commoner**), an accountant. He is chained to the heavy wooden desk and has no interest in the characters or their concerns. Under no circumstances does he voluntarily leave the room. Lief pulls the rope the instant he feels threatened.
 
-![{@creature Lief Lipsiege|CoS}](img/adventure/CoS/029-cos04-07.webp)
+![{@creature Lief Lipsiege|CoS}](images/029-cos04-07.webp)
 
 Pulling the rope requires an action. When the rope is pulled, a tremendously loud gong sounds. One or more creatures arrive 1d6 rounds later, attacking any characters still in the room. Determine the creatures randomly by rolling a d4:
 
@@ -756,7 +756,7 @@ The staircase leads down to area K24.
 
 Refer to map 5 of the castle for areas K35 through K46.
 
-![Map 5: Rooms of Weeping](img/adventure/CoS/030-008.webp)![Player Version](img/adventure/CoS/030-008-player.webp)![Rooms of Weeping (Battlemap; DM Version)](img/adventure/CoS/map-4.05-weeping.webp)![Rooms of Weeping (Battlemap; Player Version)](img/adventure/CoS/map-4.05-weeping-player.webp)
+![Map 5: Rooms of Weeping](images/030-008.webp)![Player Version](images/030-008-player.webp)![Rooms of Weeping (Battlemap; DM Version)](images/map-4.05-weeping.webp)![Rooms of Weeping (Battlemap; Player Version)](images/map-4.05-weeping-player.webp)
 ### K35. Guardian Vermin
 
 >>A door of delicately engraved steel stands at the west end of this short, dark hallway. Intricate details stand out clearly on the door's surface. The door seems to shine with a light of its own, untouched by time. Flanking the door are two alcoves in shadow. A dark, vaguely man-shaped figure stands in each alcove.
@@ -814,7 +814,7 @@ The real treasure here is Strahd's collection of books—over one thousand uniqu
 
 Roll a d12 and consult the following table to determine the subject matter of a randomly chosen book.
 
-![Tatyana](img/adventure/CoS/031-cos04-09.webp)
+![Tatyana](images/031-cos04-09.webp)
 
 | d12 | Book                                   |
 |:---:|----------------------------------------|
@@ -918,7 +918,7 @@ If your card reading indicates an encounter with **Strahd** in this area, he is 
 >>A large bed, canopied by silk curtains, sits with its headboard against the north wall. Carved into the headboard with great skill is a large "Z." Lying amid the velvet and satin sheets and bedclothes is a young woman in a nightgown. One of her dainty slippers has fallen to the floor at the bed's foot.
 >>
 
-![{@creature Gertruda|CoS}](img/adventure/CoS/032-cos04-10.webp)
+![{@creature Gertruda|CoS}](images/032-cos04-10.webp)
 
 Arched double doors lead from this room to the south and east.
 
@@ -981,7 +981,7 @@ The armor can't be salvaged if it is reduced to 0 hit points.
 
 Refer to maps 6 through *10* of Castle Ravenloft for areas K47 through K60.
 
-![Map 6: Spires of Ravenloft](img/adventure/CoS/033-009.webp)![Player Version](img/adventure/CoS/033-009-player.webp)![Spires and Tower of Ravenloft (Battlemap; DM Version)](img/adventure/CoS/map-4.06-spires12.webp)![Spires and Tower of Ravenloft (Battlemap; Player Version)](img/adventure/CoS/map-4.06-spires12-player.webp)
+![Map 6: Spires of Ravenloft](images/033-009.webp)![Player Version](images/033-009-player.webp)![Spires and Tower of Ravenloft (Battlemap; DM Version)](images/map-4.06-spires12.webp)![Spires and Tower of Ravenloft (Battlemap; Player Version)](images/map-4.06-spires12-player.webp)
 ### K47. Portrait of Strahd
 
 >>You come to a dark landing ten feet wide and twenty feet long. A cold draft of wind rushes down the spiral staircase at the north end of the east wall and whistles mournfully through the room before streaming down the stairs to the south.
@@ -989,7 +989,7 @@ Refer to maps 6 through *10* of Castle Ravenloft for areas K47 through K60.
 >>An ornate, square rug covers the floor to the south. Set into the west wall is an ironbound wooden door with a wooden trapdoor set into the floor in front of it. Hanging on the north wall above the trapdoor is a framed portrait of a handsome, well-dressed man with a serene yet penetrating gaze.
 >>
 
-![](img/adventure/CoS/034-cos04-11.webp)
+![](images/034-cos04-11.webp)
 
 The ornate rug is actually a **rug of smothering**. It attacks creatures, other than undead, that move across it or anyone who tries to move it or otherwise disturb it. Underneath the rug is a bare stone floor.
 
@@ -1013,7 +1013,7 @@ This stairway rises from area K47, past area K54, to area K57.
 
 The youthful man on the couch is **Escher**, a dashing **vampire spawn** to whom Strahd has shown favor in the past. **Escher** is feeling somewhat neglected of late and has retreated here until Strahd's mood improves. If attacked, he hurls himself out the window and lands like a cat on the roof of the keep (area K53). He leads pursuers right to Strahd, wherever the lord of the castle happens to be (and regardless of whether the characters are ready to face Strahd).
 
-![{@creature Escher|CoS} and the Three Brides](img/adventure/CoS/035-cos04-20.webp)
+![{@creature Escher|CoS} and the Three Brides](images/035-cos04-20.webp)
 
 In conversation, **Escher** displays wit with a hint of melancholy. Beneath his arch mood is a dread that Strahd is growing bored of him and will lock him in the catacombs (area K84) with Strahd's other castoff consorts.
 
@@ -1082,7 +1082,7 @@ There is a secret trapdoor in the northeast corner of the floor. Because of the 
 
 ### K56. Cauldron
 
-![Maps 7-10: Spires and Tower of Ravenloft](img/adventure/CoS/036-010.webp)![Player Version](img/adventure/CoS/036-010-player.webp)Characters who stand outside the door to this room can smell a pungent odor coming from within.
+![Maps 7-10: Spires and Tower of Ravenloft](images/036-010.webp)![Player Version](images/036-010-player.webp)Characters who stand outside the door to this room can smell a pungent odor coming from within.
 
 If the witches in this room have not been warned that the characters are coming, the characters can hear their horrid cackling. If the characters open the door slightly, they witness the scene described below:
 
@@ -1165,7 +1165,7 @@ If the characters climb the stairs to this area, read:
 
 The ceiling here is 9 feet high. The manacles are rusted and can be easily torn from the walls. The trapdoor in the ceiling leads to the tower rooftop (area K60a).
 
-![](img/adventure/CoS/037-cos19-10.webp)
+![](images/037-cos19-10.webp)
 
 #### Treasure
 
@@ -1196,7 +1196,7 @@ The courtyard lies 260 feet below, and the roof of the keep is 130 feet below.
 
 Refer to map 11 of the castle for areas K61 through K72.
 
-![Map 11: Larders of Ill Omen & Map 12: Dungeon and Catacombs](img/adventure/CoS/038-011.webp)![Player Version](img/adventure/CoS/038-011-player.webp)![Larders of Ill Omen (Battlemap; DM Version)](img/adventure/CoS/map-4.08-larders.webp)![Larders of Ill Omen (Battlemap; Player Version)](img/adventure/CoS/map-4.08-larders-player.webp)![Dungeon and Catacombs (Battlemap; DM Version)](img/adventure/CoS/map-4.09-dungeons-and-catacombs.webp)![Dungeon and Catacombs (Battlemap; Player Version)](img/adventure/CoS/map-4.09-dungeons-and-catacombs-player.webp)
+![Map 11: Larders of Ill Omen & Map 12: Dungeon and Catacombs](images/038-011.webp)![Player Version](images/038-011-player.webp)![Larders of Ill Omen (Battlemap; DM Version)](images/map-4.08-larders.webp)![Larders of Ill Omen (Battlemap; Player Version)](images/map-4.08-larders-player.webp)![Dungeon and Catacombs (Battlemap; DM Version)](images/map-4.09-dungeons-and-catacombs.webp)![Dungeon and Catacombs (Battlemap; Player Version)](images/map-4.09-dungeons-and-catacombs-player.webp)
 ### K61. Elevator Trap
 
 See area K31 and the accompanying Elevator Trap diagram before running this encounter.
@@ -1204,7 +1204,7 @@ See area K31 and the accompanying Elevator Trap diagram before running this enco
 >>This dusty, ten-foot-wide, thirty-foot-long corridor has a flat ceiling ten feet overhead. To the south, a web-filled stairway spirals down into darkness. The north end of the hall ends at a wooden door.
 >>
 
-![Map: Elevator Trap](img/adventure/CoS/039-012.webp)![Player Version](img/adventure/CoS/040-cos401.webp)This hallway contains an elevator trap, triggered when at least 400 pounds of pressure is applied to the 10-foot-square section of floor in the center of the hall (marked T on the map), or when the lever in area K31 is raised. A party of adventurers moving in close formation down the hall is certainly heavy enough to trigger the trap.
+![Map: Elevator Trap](images/039-012.webp)![Player Version](images/040-cos401.webp)This hallway contains an elevator trap, triggered when at least 400 pounds of pressure is applied to the 10-foot-square section of floor in the center of the hall (marked T on the map), or when the lever in area K31 is raised. A party of adventurers moving in close formation down the hall is certainly heavy enough to trigger the trap.
 
 A character who searches for traps while crossing the hall and succeeds on a DC 15 Wisdom (Perception) check detects seams in the floor, walls, and ceiling that suggest that the middle section isn't attached to the rest of the hall. A character who makes a successful DC 15 Intelligence (Investigation) check discerns that the trap can't be disarmed from this location.
 
@@ -1235,7 +1235,7 @@ The figure approaching is **Cyrus Belview**, a **mongrelfolk** (see appendix D) 
 
 The light in the hall comes from a lantern on the floor behind Cyrus. If the characters have their own light sources, Cyrus sees them, but he will not attack first. He wears a loop of twine around his neck, hanging from which is an iron key and a decorative wooden pendant fitted with a varnished human eyeball. The key unlocks the iron chest in area K60. The wooden pendant is a *hag eye* given to Cyrus by the **night hag** **Morgantha** (see *chapter 6*), so that she could spy on Strahd. Cyrus doesn't know that the necklace is magical. See the "Hag Covens" sidebar in the hags entry in the *Monster Manual* for information about the *hag eye*.
 
-![{@creature Cyrus Belview|CoS}](img/adventure/CoS/041-cos04-16.webp)
+![{@creature Cyrus Belview|CoS}](images/041-cos04-16.webp)
 
 Poor old Cyrus is obviously crazy. He has served the master for uncounted years and is devoted to him. Cyrus tries to get the characters to retire to their "room in the tower" (area K49). If the characters aren't sure what room he is talking about, he offers to lead them there.
 
@@ -1374,7 +1374,7 @@ The following boxed text assumes that the characters arrive by way of the stairc
 >>The stairs descend into black, still water that fills an arched hallway before you. The water's surface is like dark, mirrored glass, disturbed only occasionally by the "thwick" of a drop falling from the ceiling. Twenty feet ahead, arched doorways lead downward from each side of the hallway. In each arched doorway, an iron door stands closed and partially submerged. You hear a weak cry for help from beyond the south door.
 >>
 
-![Map: Traps in Area K73](img/adventure/CoS/042-cos04-17.webp)
+![Map: Traps in Area K73](images/042-cos04-17.webp)
 
 The water is 3 feet deep in the hallway and opaque. The steps on both sides of the hallway descend another 2 feet before ending at the iron doors to the north and south.
 
@@ -1472,7 +1472,7 @@ The corridor is 40 feet long. Branching off it are eight cells, four along each 
 
 The man is **Emil Toranescu**, a **werewolf** with 72 hit points. He claims to be a resident of Vallaki who was chased by dire wolves to the castle. He begs the characters to rescue him, offering to help them in exchange.
 
-![{@creature Emil Toranescu|CoS}](img/adventure/CoS/043-cos04-18.webp)
+![{@creature Emil Toranescu|CoS}](images/043-cos04-18.webp)
 
 In truth, Strahd locked Emil here as punishment for causing a schism in his werewolf pack (see *chapter 15*). Anxious to prove his worth to Strahd, Emil rewards the characters for freeing him by attacking them when a good opportunity arises. Emil doesn't turn against the characters if they claim to be allies of his wife, Zuleika (see *chapter 15*, area Z7). In that case, he tries to leave the castle and reunite with her, staying with the characters only until an opportunity to leave presents itself.
 
@@ -1526,7 +1526,7 @@ If the characters approach the "dark, low shapes" in the water, read:
 
 As soon as one or more characters move more than 10 feet into the room, six **Strahd zombies** rise slowly out of the water, their slime-gray arms clawing upward through the water as they attack.
 
-![](img/adventure/CoS/044-cos04-19.webp)
+![](images/044-cos04-19.webp)
 
 ### K77. Observation Balcony
 
@@ -2233,7 +2233,7 @@ A creature of lawful good alignment that moves west to east through the curtain 
 >>This tomb rests in hushed silence. Tall, stained glass windows dominate the eastern walls, allowing dim light to fall on two coffins resting atop white marble slabs. The one against the north wall is marked King Barov von Zarovich, and the one against the south wall is marked Queen Ravenovia van Roeyen. The vaulted ceiling thirty feet overhead is inlaid with a beautiful gold mosaic.
 >>
 
-![King Barov and Queen Ravenovia](img/adventure/CoS/045-cos04-21.webp)
+![King Barov and Queen Ravenovia](images/045-cos04-21.webp)
 
 The stained glass windows are so dirty on the outside as to be nearly opaque. The windows don't open, but they can be smashed easily. Anyone who looks upward through a window can see, 110 feet above, the castle's stone overlook (area K6). Anyone who falls out a window here plummets almost 900 feet to the base of the Pillarstone of Ravenloft.
 
