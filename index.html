@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Castle Ravenloft VTT Mapper</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">Castle&nbsp;Ravenloft<span>VTT mapper</span></div>
+
+  <label class="ctl">Level
+    <select id="levelSelect"></select>
+  </label>
+
+  <label class="ctl chk"><input type="checkbox" id="playerMap"> Player map</label>
+
+  <span class="sep"></span>
+
+  <div class="tools" id="history">
+    <button id="undoBtn" class="tool" title="Undo (Ctrl+Z)">&#8630;</button>
+    <button id="redoBtn" class="tool" title="Redo (Ctrl+Shift+Z)">&#8631;</button>
+  </div>
+
+  <div class="tools" id="toolbar">
+    <button data-tool="select" class="tool active" title="Select / move (V)">Select</button>
+    <button data-tool="rect"   class="tool" title="Rectangle (R)">Rect</button>
+    <button data-tool="circle" class="tool" title="Circle (C) &mdash; drag from the centre out to the rim">Circle</button>
+    <button data-tool="poly"   class="tool" title="Polygon (P) &mdash; click points, Enter or double-click to close">Poly</button>
+    <button data-tool="seg"    class="tool" title="Door segment (D) &mdash; drag across the doorway">Door</button>
+    <button data-tool="point"  class="tool" title="Point (T)">Point</button>
+    <button data-tool="wallseg" class="tool" title="Wall (W) &mdash; drag to lay a wall inside a room">Wall</button>
+    <button data-tool="edges"  class="tool" title="Edges (E) &mdash; click an outline edge to switch it between wall and open">Edges</button>
+  </div>
+
+  <div class="tools dim" id="boolMode" title="How a new shape combines with the area already selected">
+    <button data-bool="new" class="tool active" title="Replace the area (1)">New</button>
+    <button data-bool="add" class="tool" title="Add to the area (2)">&#43;</button>
+    <button data-bool="sub" class="tool" title="Subtract from the area (3, or hold Ctrl while drawing)">&minus;</button>
+  </div>
+
+  <span class="sep"></span>
+
+  <label class="ctl">Snap
+    <span id="snapHint" class="snapHint"></span>
+    <select id="snapMode">
+      <option value="corner">Grid corners (10 ft)</option>
+      <option value="half">Half squares (5 ft)</option>
+      <option value="center">Square centers</option>
+      <option value="off">Off</option>
+    </select>
+  </label>
+  <label class="ctl chk"><input type="checkbox" id="showGrid" checked> Grid</label>
+  <button id="gridBtn" class="ghost" title="Grid size and alignment">Grid setup</button>
+
+  <span class="spacer"></span>
+
+  <a class="ghost readerLink" href="/browse" title="Open the read-only reader">Reader</a>
+  <button id="exportBtn" class="ghost">Export&nbsp;VTT</button>
+  <span id="saveState" class="save idle">saved</span>
+</header>
+
+<main id="layout">
+
+  <!-- ---------------- rooms ---------------- -->
+  <section id="roomPane" class="pane">
+    <div class="paneHead">
+      <input id="roomSearch" type="search" placeholder="Search rooms, e.g. chapel">
+      <div class="tiny" style="display:flex;gap:10px">
+        <label class="chk"><input type="checkbox" id="onlyUnmarked"> unmarked only</label>
+        <label class="chk"><input type="checkbox" id="hideSubs"> hide sub-areas</label>
+      </div>
+      <div class="progress"><div id="roomProgress"></div></div>
+      <div class="progressText" id="roomProgressText"></div>
+    </div>
+    <div id="roomList" class="scroll"></div>
+  </section>
+  <div class="splitter" data-grip="rooms" title="Drag to resize (double-click to reset)"></div>
+
+  <!-- ---------------- features ---------------- -->
+  <section id="featurePane" class="pane">
+    <div class="paneHead">
+      <div id="featureTitle" class="featureTitle">No room selected</div>
+      <div class="alsoOn" id="alsoOn"></div>
+      <div class="featureActions">
+        <button id="markRoomBtn" class="ghost sm">Mark room area</button>
+        <button id="addFeatureBtn" class="ghost sm">+ Add</button>
+      </div>
+      <div class="edgeTools" id="edgeTools">
+        <span id="edgeCount"></span>
+        <button id="allWalls" class="ghost sm">All walls</button>
+        <button id="allOpen" class="ghost sm">All open</button>
+      </div>
+      <div class="heightTools" id="heightTools" title="Feet above the main floor, which is 0">
+        <span id="heightWho"></span>
+        <label>h<input type="number" id="hFrom" step="5" placeholder="ft"></label>
+        <label>to<input type="number" id="hTo" step="5" placeholder="&mdash;"></label>
+        <button id="hClear" class="ghost sm" title="Back to the floor of this sheet">clear</button>
+      </div>
+      <div class="filters" id="typeFilters"></div>
+    </div>
+    <div id="featureList" class="scroll"></div>
+    <div class="textSplit">
+      <button id="textToggle" class="textToggle">Module text <span class="caret">▾</span></button>
+      <div id="roomText" class="scroll roomText"></div>
+    </div>
+  </section>
+  <div class="splitter" data-grip="feats" title="Drag to resize (double-click to reset)"></div>
+
+  <!-- ---------------- map ---------------- -->
+  <section id="mapPane">
+    <canvas id="canvas"></canvas>
+    <div id="hint" class="hint"></div>
+    <div id="coords" class="coords"></div>
+    <div class="zoomBar">
+      <button id="zoomOut">&minus;</button>
+      <span id="zoomLabel">100%</span>
+      <button id="zoomIn">+</button>
+      <button id="zoomFit">Fit</button>
+    </div>
+  </section>
+</main>
+
+<!-- ---------------- grid dialog ---------------- -->
+<dialog id="gridDialog">
+  <h2>Grid setup <small id="gridLevelName"></small></h2>
+  <p class="dlgNote">Every map is pre-measured, so this should already line up. If you want to adjust it,
+    the calibrate tool is quickest: drag a line across a run of squares and say how many you crossed.
+    These sheets are drawn at 1 square = 10 feet.</p>
+  <div class="grid2">
+    <label>Square size (px)<input type="number" id="gridSize" step="0.01" min="4"></label>
+    <label>Feet per square<input type="number" id="gridFeet" step="1" min="1"></label>
+    <label>Offset X (px)<input type="number" id="gridOffX" step="0.5"></label>
+    <label>Offset Y (px)<input type="number" id="gridOffY" step="0.5"></label>
+  </div>
+  <p class="dlgNote">Nudge offsets with the arrow keys while the map has focus and Grid setup is open.</p>
+  <div class="dlgRow">
+    <button id="calibrateBtn" class="primary">Calibrate by dragging</button>
+    <span class="spacer"></span>
+    <button id="gridClose" class="ghost">Done</button>
+  </div>
+</dialog>
+
+<!-- ---------------- add feature dialog ---------------- -->
+<dialog id="addDialog">
+  <h2>Add a marker to <span id="addRoomName"></span></h2>
+  <div class="grid2">
+    <label>Label<input type="text" id="addLabel" placeholder="e.g. Secret door to K11"></label>
+    <label>Type<select id="addType"></select></label>
+  </div>
+  <label class="full">Note<textarea id="addNote" rows="3" placeholder="optional"></textarea></label>
+  <div class="dlgRow">
+    <button id="addCancel" class="ghost">Cancel</button>
+    <span class="spacer"></span>
+    <button id="addSave" class="primary">Add</button>
+  </div>
+</dialog>
+
+<!-- ---------------- export dialog ---------------- -->
+<dialog id="exportDialog">
+  <h2>Export Universal VTT</h2>
+  <p class="dlgNote">Writes a <code>.dd2vtt</code> per level into the <code>exports</code> folder next to
+    <code>serve.py</code>. Door markers become portals, room polygons become line-of-sight walls, and every
+    marker is also written to a companion <code>-notes.json</code>.</p>
+  <div class="grid2">
+    <label>Levels<select id="expLevel"><option value="*">All levels with markers</option></select></label>
+    <label>Grid<select id="expGrid">
+      <option value="2">5 ft cells (split each drawn square)</option>
+      <option value="1">10 ft cells (as drawn)</option>
+    </select></label>
+    <label>Image scale<select id="expScale">
+      <option value="1">Full resolution</option>
+      <option value="0.5">Half resolution</option>
+      <option value="0.25">Quarter resolution</option>
+      <option value="0">No image (geometry only)</option>
+    </select></label>
+  </div>
+  <label class="chk full"><input type="checkbox" id="expLos" checked> Room outlines as line-of-sight walls &mdash; edges marked open are left out</label>
+  <label class="chk full"><input type="checkbox" id="expLights" checked> Light markers as lights</label>
+  <label class="chk full"><input type="checkbox" id="expPlayer"> Use the player-version map image</label>
+  <div id="expStatus" class="dlgNote"></div>
+  <div class="dlgRow">
+    <button id="expCancel" class="ghost">Close</button>
+    <span class="spacer"></span>
+    <button id="expRun" class="primary">Export</button>
+  </div>
+</dialog>
+
+<script src="/app.js"></script>
+</body>
+</html>

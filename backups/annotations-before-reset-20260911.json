@@ -1,0 +1,64 @@
+{
+ "version": 1,
+ "updated": "2026-09-11T09:49:33",
+ "grids": {
+  "main": {
+   "size": 86.51,
+   "offsetX": 32.16,
+   "offsetY": 1.53,
+   "feetPerSquare": 10,
+   "calibrated": true
+  },
+  "walls": {
+   "size": 87.37,
+   "offsetX": 1.59,
+   "offsetY": 77.97,
+   "feetPerSquare": 10,
+   "calibrated": true
+  }
+ },
+ "marks": {
+  "room:K1@walls": {
+   "levelId": "walls",
+   "shape": {
+    "type": "rect",
+    "x": 700.5500000000001,
+    "y": 3223.29,
+    "w": 2446.36,
+    "h": 698.96
+   },
+   "secret": false
+  },
+  "feat:K1::f1@walls": {
+   "levelId": "walls",
+   "shape": {
+    "type": "poly",
+    "pts": [
+     [
+      700.5500000000001,
+      3223.29
+     ],
+     [
+      1312.14,
+      3572.77
+     ],
+     [
+      1399.51,
+      3398.03
+     ],
+     [
+      1399.51,
+      3398.03
+     ]
+    ]
+   },
+   "secret": false
+  }
+ },
+ "customFeatures": {},
+ "hiddenFeatures": [
+  "K1::f2"
+ ],
+ "roomStatus": {},
+ "roomNotes": {}
+}

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Castle Ravenloft Reader</title>
+<link rel="stylesheet" href="/browse.css">
+</head>
+<body>
+
+<header id="topbar">
+  <div class="brand">Castle&nbsp;Ravenloft<span>reader</span></div>
+  <button id="navBack" class="ghost sm" title="Back (Alt+&larr;)" disabled>&larr;</button>
+  <button id="navForward" class="ghost sm" title="Forward (Alt+&rarr;)" disabled>&rarr;</button>
+  <input id="search" type="search" placeholder="Search rooms, e.g. chapel, crypt, K56">
+  <label class="ctl chk"><input type="checkbox" id="playerMap"> Player map</label>
+  <label class="ctl chk"><input type="checkbox" id="showGrid"> Grid</label>
+  <button id="floorsBtn" class="ghost" title="The castle floor by floor (S)">Vertical minimap</button>
+  <span class="spacer"></span>
+  <span id="crumb" class="crumb"></span>
+  <a class="ghost" href="/" title="Open the editor">Editor</a>
+</header>
+
+<main id="layout">
+
+  <!-- ---------------- library ---------------- -->
+  <nav id="libraryPane" class="pane">
+    <div id="library" class="scroll"></div>
+  </nav>
+  <div class="splitter" data-grip="lib" title="Drag to resize"></div>
+
+  <!-- ---------------- the room ---------------- -->
+  <section id="roomPane" class="pane">
+    <div id="roomHead" class="roomHead"></div>
+    <div id="roomBody" class="scroll">
+      <div class="emptyNote">Pick a room on the left.</div>
+    </div>
+  </section>
+  <div class="splitter" data-grip="room" title="Drag to resize"></div>
+
+  <!-- ---------------- the map ---------------- -->
+  <section id="mapPane">
+    <canvas id="canvas"></canvas>
+    <div id="tip" class="tip" hidden></div>
+    <div class="zoomBar">
+      <button id="zoomOut">&minus;</button>
+      <span id="zoomLabel">100%</span>
+      <button id="zoomIn">+</button>
+      <button id="zoomFit">Fit room</button>
+      <button id="zoomAll">Whole floor</button>
+    </div>
+    <div id="legend" class="legend"></div>
+  </section>
+
+  <!-- ---------------- the castle, floor by floor ---------------- -->
+  <div class="splitter" data-grip="floors" title="Drag to resize"></div>
+  <aside id="floorsPane" class="pane">
+    <div class="floorsHead">
+      <span>The castle, floor by floor</span>
+      <button id="floorsClose" class="ghost sm" title="Hide">&times;</button>
+    </div>
+    <div id="floors" class="scroll"></div>
+  </aside>
+</main>
+
+<script src="/browse.js"></script>
+</body>
+</html>
