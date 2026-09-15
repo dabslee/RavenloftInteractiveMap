@@ -88,7 +88,10 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--sel); outli
   white-space: nowrap;
 }
 .ctl select { width: auto; min-width: 90px; text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--text); }
-#levelSelect { min-width: 190px; }
+#levelSelect { min-width: 160px; }
+/* two selects now share the left of the bar, so neither may hog it */
+#packSelect { min-width: 120px; max-width: 180px; }
+#levelSelect, #packSelect { flex: 0 1 auto; text-overflow: ellipsis; }
 .ctl.chk, label.chk { cursor: pointer; }
 label.chk input { accent-color: var(--accent); margin-right: 4px; vertical-align: -1px; }
 .sep { width: 1px; height: 22px; background: var(--line); }
@@ -325,3 +328,75 @@ a.readerLink {
   padding: 5px 10px; color: var(--dim); text-decoration: none; white-space: nowrap;
 }
 a.readerLink:hover { color: var(--text); border-color: #4a4363; }
+
+/* ---- links panel: the same thing marked twice, and what leads where ---- */
+.linkSplit {
+  border-top: 1px solid var(--line);
+  display: flex; flex-direction: column; min-height: 0; flex: none;
+}
+.linkSplit.open { flex: 1 1 40%; }
+.linkPanel { display: none; padding: 8px 10px 14px; font-size: 12px; }
+.linkSplit.open .linkPanel { display: block; }
+.textToggle .tally {
+  margin-left: 6px; padding: 1px 6px; border-radius: 999px;
+  background: #2c2640; color: #cbb9ff; font-size: 10px; letter-spacing: 0;
+}
+.textToggle .tally:empty { display: none; }
+
+.linkGroup { margin-bottom: 14px; }
+.linkGroup > h4 {
+  margin: 0 0 6px; font-size: 10px; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--accent2); font-weight: 700;
+}
+.linkGroup > h4 small { color: var(--dimmer); text-transform: none; letter-spacing: 0; font-weight: 500; }
+.linkRow {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 6px; border-radius: 6px; background: #201d2b;
+  border: 1px solid #2e2940; margin-bottom: 4px;
+}
+.linkRow:hover { border-color: #463d63; }
+.linkRow .ico { font-size: 13px; line-height: 1; flex: none; }
+.linkRow .what { flex: 1; min-width: 0; }
+.linkRow .what b { display: block; font-weight: 600; color: var(--text); }
+.linkRow .what span { display: block; font-size: 10.5px; color: var(--dim); }
+.linkRow .go, .linkRow .cut {
+  flex: none; padding: 2px 7px; font-size: 10px; border-radius: 5px;
+  background: #272234; border: 1px solid #3a3350; color: var(--dim);
+}
+.linkRow .go:hover { color: #fff; border-color: var(--sel); }
+.linkRow .cut:hover { color: #ff9a94; border-color: var(--accent); }
+.src {
+  flex: none; font: 600 9px/1 Inter, Segoe UI, sans-serif; letter-spacing: .06em;
+  text-transform: uppercase; padding: 3px 5px; border-radius: 4px;
+}
+.src.hand { background: #2a2340; color: #c3aaff; }
+.src.auto { background: #1e2a2b; color: #86c7c3; }
+.src.via  { background: #2b2620; color: #d9b077; }
+
+.linkAdd { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+.linkAdd button { font-size: 11px; padding: 4px 9px; }
+.linkAdd button.arming { border-color: var(--accent2); color: var(--accent2); }
+.linkNote { color: var(--dimmer); font-size: 11px; margin: 4px 0 0; }
+canvas.picking { cursor: crosshair; }
+
+/* the connect dialog's room list */
+.connHits { max-height: 220px; overflow: auto; margin: 4px 0 10px; }
+.connHits .hit {
+  display: flex; gap: 8px; align-items: baseline; width: 100%;
+  text-align: left; background: transparent; border: 0; border-radius: 5px; padding: 5px 7px;
+}
+.connHits .hit:hover { background: var(--bg3); }
+.connHits .hit b { color: var(--text); min-width: 46px; }
+.connHits .hit span { color: var(--dim); font-size: 11.5px; }
+.connHits .hit em { color: var(--dimmer); font-style: normal; font-size: 10.5px; margin-left: auto; }
+.connHits .hit.on { opacity: .5; }
+.linkRow.struck { opacity: .62; border-style: dashed; }
+.linkRow.struck .ico { color: var(--dimmer); }
+.linkRow.struck .what b { text-decoration: line-through; color: var(--dim); }
+.linkNote.placements { margin-top: 2px; }
+.placeChip {
+  font: 600 10px/1 Inter, Segoe UI, sans-serif; padding: 2px 6px; border-radius: 999px;
+  background: #241f33; color: #cbb9ff; border: 1px solid #3a3350; cursor: pointer;
+}
+.placeChip.tied { background: #2a2340; border-color: #6a55a8; }
+.placeChip:hover { border-color: var(--sel); color: #fff; }

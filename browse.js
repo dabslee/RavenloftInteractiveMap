@@ -27,10 +27,12 @@ const TYPES = {
 const OPEN = 0;
 
 let DATA = null, ANN = null;
+let PACKS = { base: 'References/img/map_packs', default: 'default', packs: [] };
 const LEVELS = new Map(), ROOMS = new Map();
 
 const S = {
   levelId: null, roomId: null, search: '',
+  mapPack: 'default',
   playerMap: false, showGrid: false,
   view: { scale: 1, tx: 0, ty: 0 },
   hover: null, drag: null,
@@ -45,16 +47,20 @@ let img = null, needsDraw = true;
 //  loading
 // ==================================================================
 (async function boot() {
-  const [d, a] = await Promise.all([
+  const [d, a, packs] = await Promise.all([
     fetch('/castle-data.json').then(r => r.json()),
     fetch('/api/annotations').then(r => r.json()),
+    fetch('/api/map-packs').then(r => r.json()).catch(() => null),
   ]);
   DATA = d; ANN = a;
+  if (packs && packs.packs) PACKS = packs;
+  S.mapPack = pickPack(localStorage.getItem('cr.pack'));
   ANN.marks ||= {}; ANN.customFeatures ||= {}; ANN.hiddenFeatures ||= []; ANN.renames ||= {};
   ANN.grids ||= {};
   DATA.levels.forEach(l => LEVELS.set(l.id, l));
   DATA.rooms.forEach(r => ROOMS.set(r.id, r));
 
+  buildPackSelect();
   wire();
   renderLibrary();
   loop();
@@ -173,6 +179,15 @@ const PASSAGE_TYPES = new Set(['door', 'secret-door', 'stairs', 'window']);
 const PASSAGE_WORDS =
   /trapdoor|trap door|ladder|chute|shaft|bridge|archway|portcullis|stair|steps|elevator|walkway|balcony|opening|doorway|hatch|teleport/i;
 
+/**
+ * Every room a marker reaches. The editor works this out -- the rooms it stands
+ * between, the rooms its label names, the far end of anything it has been tied
+ * to as the same thing, less any pair you have said does not connect -- and
+ * writes it on as links.reach. Nothing is worked out here.
+ */
+const reaches = (key, m) =>
+  new Set(((m || ANN.marks[key] || {}).links || {}).reach || []);
+
 const WORDS = [
   [/portcullis/i, 'portcullis'], [/trapdoor|trap door/i, 'trapdoor'],
   [/ladder/i, 'ladder'], [/chute/i, 'chute'], [/bridge/i, 'bridge'],
@@ -235,84 +250,29 @@ function whereTo(fromId, toId, label, onLevel) {
 }
 
 /**
- * Every way out of a room: one row per marker that touches both this room and
- * somewhere else, plus the vertical links its label names.
+ * Every way out of a room.
+ *
+ * Nothing is worked out here. The editor derives connections once, from the
+ * marks, the module text and your corrections, and writes the answer onto
+ * every outline of the room as links.ways; this reads that list and puts it
+ * into words. So what you see here is exactly what the editor's Connects-to
+ * panel shows, and a connection that looks wrong is wrong in one place only.
  */
 function connectionsOf(roomId) {
   const rows = [];
+  waysWarning();
   const seen = new Set();
-  for (const [k, m] of Object.entries(ANN.marks)) {
-    const sk = splitKey(k);
-    if (sk.kind !== 'feat') continue;
-    const meta = markMeta(k);
-    // a statue that happens to straddle two rooms is not a way between them
-    if (!PASSAGE_TYPES.has(meta.type) && !PASSAGE_WORDS.test(meta.label || '')) continue;
-    const links = m.links || {};
-    const touches = (links.rooms || []).includes(roomId) || meta.roomId === roomId;
-    if (!touches) continue;
-    const others = new Set([...(links.rooms || []), ...(links.to || [])]);
-    others.delete(roomId);
-    if (meta.roomId !== roomId) others.add(meta.roomId);   // the far room's own entry
-    for (const other of others) {
-      if (!ROOMS.has(other)) continue;
-      const sig = other + '|' + howWord(meta);      // one row per way, not per marker
-      if (seen.has(sig)) continue;
+  for (const [roomMark, rm] of Object.entries(ANN.marks)) {
+    const sk = splitKey(roomMark);
+    if (sk.kind !== 'room' || sk.id !== roomId) continue;
+    for (const w of (rm.links && rm.links.ways) || []) {
+      const sig = w.to + '|' + w.via + '|' + w.how;
+      if (seen.has(sig) || !ROOMS.has(w.to)) continue;
       seen.add(sig);
-      rows.push({
-        to: other, key: k, levelId: m.levelId,
-        type: meta.type, label: meta.label,
-        how: howWord(meta),
-        height: heightOf(k, m),
-        go: whereTo(roomId, other, meta.label, S.levelId),
-      });
+      const row = rowFor(roomId, w, roomMark, rm);
+      if (row) rows.push(row);
     }
   }
-  // an edge marked open is a way through as much as a door is
-  for (const [k, m] of Object.entries(ANN.marks)) {
-    const sk = splitKey(k);
-    if (sk.kind !== 'room' || sk.id !== roomId || m.shape.type !== 'area') continue;
-    const g = grid(m.levelId).size;
-    const index = roomIndex(m.levelId);
-    for (const part of m.shape.parts) {
-      const r = part.ring;
-      for (let i = 0; i < r.length; i++) {
-        if (part.edges[i] !== OPEN) continue;
-        const a = r[i], b = r[(i + 1) % r.length];
-        const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
-        if (L < 1) continue;
-        const nx = -(b[1] - a[1]) / L, ny = (b[0] - a[0]) / L;
-        const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
-        for (const d of [-0.35, 0.35]) {
-          for (const other of roomsAtPoint([mx + nx * g * d, my + ny * g * d], index)) {
-            if (other === roomId) continue;
-            const sig = other + '|open';
-            if (seen.has(sig)) continue;
-            seen.add(sig);
-            rows.push({ to: other, key: k, levelId: m.levelId, type: 'room',
-                        label: 'The two areas run together here', how: 'open boundary',
-                        height: heightOf(k, m), go: whereTo(roomId, other, '', S.levelId) });
-          }
-        }
-      }
-    }
-  }
-
-  // finally, what the book says even where nothing is marked yet
-  for (const f of featuresOf(roomId)) {
-    const meta = { type: f.type, label: f.label };
-    if (!PASSAGE_TYPES.has(f.type) && !PASSAGE_WORDS.test(f.label || '')) continue;
-    const placed = Object.keys(ANN.marks).some(k =>
-      splitKey(k).kind === 'feat' && splitKey(k).id === f.id);
-    for (const other of textTargets(f.label, roomId)) {
-      const sig = other + '|' + howWord(meta);
-      if (seen.has(sig)) continue;
-      seen.add(sig);
-      rows.push({ to: other, key: null, levelId: null, type: f.type, label: f.label,
-                  how: howWord(meta), unmarked: !placed, height: null,
-                  go: whereTo(roomId, other, f.label, S.levelId) });
-    }
-  }
-
   const order = { stairs: 0, door: 1, 'secret-door': 2, room: 3, window: 4 };
   rows.sort((a, b) => (a.unmarked ? 1 : 0) - (b.unmarked ? 1 : 0)
                    || (order[a.type] ?? 9) - (order[b.type] ?? 9)
@@ -320,44 +280,47 @@ function connectionsOf(roomId) {
   return rows;
 }
 
-const ROOM_RE = /\bK\d{1,2}[a-z]?\b/g;
-const CRYPT_RE = /\bcrypt\s*(\d{1,2})\b/gi;
-
-/** Room ids named in a piece of text. */
-function textTargets(label, selfRoom) {
-  const out = new Set();
-  for (const m of (label || '').matchAll(ROOM_RE)) if (ROOMS.has(m[0])) out.add(m[0]);
-  for (const m of (label || '').matchAll(CRYPT_RE)) {
-    const id = 'Crypt ' + Number(m[1]);
-    if (ROOMS.has(id)) out.add(id);
-  }
-  out.delete(selfRoom);
-  return [...out];
+/** An annotations file written before the editor worked connections out has no
+ *  ways on it, and there is nothing here to fall back on by design. Say so once,
+ *  rather than quietly showing every room as a dead end. */
+let _warned = false;
+function waysWarning() {
+  if (_warned) return;
+  _warned = true;
+  const any = Object.entries(ANN.marks)
+    .some(([k, m]) => k.startsWith('room:') && m.links && m.links.ways);
+  if (any) return;
+  const el = $('#crumb');
+  if (el) el.textContent = 'Open the editor once to work out the connections';
+  console.warn('No links.ways in the annotations: open the editor once and let it save.');
 }
 
-const _idx = new Map();
-function roomIndex(levelId) {
-  if (!_idx.has(levelId)) {
-    _idx.set(levelId, Object.entries(ANN.marks)
-      .filter(([k, m]) => k.startsWith('room:') && m.levelId === levelId && m.shape.type === 'area')
-      .map(([k, m]) => ({ id: splitKey(k).id, shape: m.shape, bb: bboxOf(m.shape) })));
+/** One way turned into a row: what kind of way it is, and where it comes out. */
+function rowFor(roomId, w, roomMark, rm) {
+  const say = (type, label, how, key, levelId, height, unmarked) => ({
+    to: w.to, key, levelId, type, label, how, height, unmarked: !!unmarked,
+    go: whereTo(roomId, w.to, label, S.levelId),
+  });
+  if (w.how === 'marker') {
+    const m = ANN.marks[w.via];
+    if (!m) return null;                       // the marker has since been deleted
+    const meta = markMeta(w.via);
+    return say(meta.type, meta.label, howWord(meta), w.via, m.levelId,
+               heightOf(w.via, m));
   }
-  return _idx.get(levelId);
-}
-
-function bboxOf(sh) {
-  const pts = shapePoints(sh);
-  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
-  return { x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys) };
-}
-
-function roomsAtPoint(pt, index) {
-  const out = [];
-  for (const e of index) {
-    if (pt[0] < e.bb.x0 || pt[0] > e.bb.x1 || pt[1] < e.bb.y0 || pt[1] > e.bb.y1) continue;
-    if (insideArea(e.shape, pt)) out.push(e.id);
+  if (w.how === 'open') {
+    const m = ANN.marks[w.via] || rm;
+    return say('room', 'The two areas run together here', 'open boundary',
+               w.via, m.levelId, heightOf(w.via, m));
   }
-  return out;
+  if (w.how === 'text') {
+    const owner = String(w.via || '').split('::')[0];
+    const f = featuresOf(owner).find(x => x.id === w.via);
+    if (!f) return null;
+    return say(f.type, f.label, howWord(f), null, null, null, true);
+  }
+  return say('room', 'Connected by hand in the editor', 'connection',
+             roomMark, rm.levelId, heightOf(roomMark, rm));
 }
 
 // ==================================================================
@@ -501,7 +464,10 @@ const IMG_RE = /!\[([^\]]*)\]\(([^)]+)\)/g;
 /** A picture printed with this room in the book, if the file is on disk. */
 function figure(alt, src) {
   if (/player version/i.test(alt)) return '';         // a duplicate of the one above it
-  const url = /^(https?:)?\//.test(src) ? src : '/maps/References/' + src.replace(/^\.?\//, '');
+  const packed = /^(https?:)?\//.test(src) ? null : packedImgSrc(src);
+  const url = /^(https?:)?\//.test(src) ? src
+            : packed ? '/maps/' + packed
+            : '/maps/References/' + src.replace(/^\.?\//, '');
   const cap = inline(alt.replace(/\{@\w+ ([^|}]+)(\|[^}]*)?\}/g, '$1'));
   return `<figure class="fig">
     <a href="${esc(url)}" target="_blank" rel="noopener">
@@ -815,7 +781,7 @@ function floorSlabs() {
             const links = m.links || {};
             const touches = ids.has(owner) || (links.rooms || []).some(x => ids.has(x));
             if (!touches) continue;
-            const out = [...(links.rooms || []), ...(links.to || []), owner]
+            const out = [...reaches(k, m), owner]
               .find(x => ref.has(x) && !ids.has(x) && ref.get(x).from !== l.id);
             if (out) { target = out; break; }
           }
@@ -1048,8 +1014,48 @@ async function setLevel(levelId, keepView) {
   renderFloors();
 }
 
-const mapUrl = (lv, player) =>
-  '/maps/' + (player && lv.playerMap ? lv.playerMap : lv.dmMap).replace(/^\/+/, '');
+// ------------------------------------------------------------------ map packs
+// The same swap the editor does: castle-data.json names each sheet inside
+// map_packs/default, and choosing another pack replaces that path segment.
+// A pack that is missing a sheet falls back to the default one.
+const PACK_SEG = /(References\/img\/map_packs\/)[^/]+\//;
+const packById = id => (PACKS.packs || []).find(p => p.id === id) || null;
+const sheetFile = (lv, player) =>
+  ((player && lv.playerMap) ? lv.playerMap : lv.dmMap).split('/').pop();
+const packHas = (id, file) => !!((packById(id)?.files || {})[file]);
+
+function pickPack(id) {
+  if (id && packById(id)) return id;
+  const dflt = PACKS.default || 'default';
+  return packById(dflt) ? dflt : (PACKS.packs?.[0]?.id || dflt);
+}
+
+function sheetPath(lv, player) {
+  const base = (player && lv.playerMap) ? lv.playerMap : lv.dmMap;
+  const use = packHas(S.mapPack, sheetFile(lv, player)) ? S.mapPack : (PACKS.default || 'default');
+  return PACK_SEG.test(base) ? base.replace(PACK_SEG, '$1' + use + '/') : base;
+}
+
+const mapUrl = (lv, player) => '/maps/' + sheetPath(lv, player).replace(/^\/+/, '');
+
+/** Book figures name sheets by their old flat path; send those through the pack too. */
+function packedImgSrc(src) {
+  const file = src.split('/').pop();
+  if (!/^map-/.test(file)) return null;
+  const use = packHas(S.mapPack, file) ? S.mapPack : (PACKS.default || 'default');
+  return (PACKS.base || 'References/img/map_packs') + '/' + use + '/' + file;
+}
+
+function buildPackSelect() {
+  const sel = $('#packSelect');
+  if (!sel) return;
+  sel.innerHTML = (PACKS.packs || [])
+    .map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')
+    || '<option value="default">default</option>';
+  sel.value = S.mapPack;
+  const p = packById(S.mapPack);
+  sel.title = p && p.note ? p.note : 'Which folder of battlemap sheets to draw';
+}
 
 const imgCache = new Map();
 function loadImage(url) {
@@ -1417,9 +1423,8 @@ function tipFor(key) {
   const meta = markMeta(key);
   const t = TYPES[meta.type] || TYPES.note;
   const h = heightOf(key, m);
-  const links = m.links || {};
   const dest = destinationOf(key);
-  const goes = dest ? [...new Set([...(links.rooms || []), ...(links.to || [])])]
+  const goes = dest ? [...reaches(key, m)]
     .filter(x => x !== meta.roomId && ROOMS.has(x)) : [];
   const room = ROOMS.get(meta.roomId);
   const inst = splitKey(key).inst;
@@ -1464,8 +1469,7 @@ function destinationOf(key) {
   if (!PASSAGE_TYPES.has(meta.type) && !PASSAGE_WORDS.test(meta.label || '')) {
     return meta.roomId !== S.roomId ? meta.roomId : null;   // a thing in another room
   }
-  const links = m.links || {};
-  const others = [...new Set([...(links.rooms || []), ...(links.to || [])])]
+  const others = [...reaches(key, m)]
     .filter(x => ROOMS.has(x) && x !== S.roomId);
   if (meta.roomId !== S.roomId && ROOMS.has(meta.roomId)) others.unshift(meta.roomId);
   return others[0] || null;
@@ -1517,6 +1521,13 @@ function wire() {
   };
   $('#roomBody').onmouseout = e => {
     if (e.target.closest('[data-key]')) { S.hover = null; needsDraw = true; }
+  };
+
+  $('#packSelect').onchange = e => {
+    S.mapPack = pickPack(e.target.value);
+    localStorage.setItem('cr.pack', S.mapPack);
+    buildPackSelect();
+    setLevel(S.levelId, true).then(() => renderRoom());
   };
 
   $('#playerMap').onchange = e => {

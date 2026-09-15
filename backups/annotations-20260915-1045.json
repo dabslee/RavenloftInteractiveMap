@@ -1,6 +1,6 @@
 {
  "version": 1,
- "updated": "2026-09-15T10:55:26",
+ "updated": "2026-09-15T10:44:57",
  "grids": {
   "walls": {
    "size": 87.37,
@@ -1373,7 +1373,6 @@
      "K5"
     ],
     "to": [
-     "K15",
      "K3",
      "K6"
     ],
@@ -1387,16 +1386,6 @@
      {
       "to": "K6",
       "via": "feat:K5::f2#1@walls",
-      "how": "marker"
-     },
-     {
-      "to": "K15",
-      "via": "feat:K15::f1#1@main",
-      "how": "marker"
-     },
-     {
-      "to": "K15",
-      "via": "feat:K5::cmu2uewz1#1@walls",
       "how": "marker"
      }
     ]
@@ -5502,23 +5491,12 @@
     ],
     "to": [
      "K14",
-     "K28",
-     "K5"
+     "K28"
     ],
     "levels": [
      "court"
     ],
     "ways": [
-     {
-      "to": "K5",
-      "via": "feat:K15::f1#1@main",
-      "how": "marker"
-     },
-     {
-      "to": "K5",
-      "via": "feat:K5::cmu2uewz1#1@walls",
-      "how": "marker"
-     },
      {
       "to": "K14",
       "via": "feat:K14::f2#2@main",
@@ -5548,17 +5526,13 @@
    },
    "secret": false,
    "links": {
-    "same": [
-     "feat:K5::cmu2uewz1#2@walls"
-    ],
+    "same": [],
     "rooms": [
      "K15"
     ],
     "to": [],
     "levels": [],
-    "reach": [
-     "K5"
-    ]
+    "reach": []
    }
   },
   "feat:K15::f1#2@main": {
@@ -5572,17 +5546,13 @@
    },
    "secret": false,
    "links": {
-    "same": [
-     "feat:K5::cmu2uewz1#1@walls"
-    ],
+    "same": [],
     "rooms": [
      "K15"
     ],
     "to": [],
     "levels": [],
-    "reach": [
-     "K5"
-    ]
+    "reach": []
    }
   },
   "feat:K15::f1#3@main": {
@@ -5616,18 +5586,13 @@
    },
    "secret": false,
    "links": {
-    "same": [
-     "feat:K5::cmu2uewz1#3@walls",
-     "feat:K5::cmu2uewz1#5@walls"
-    ],
+    "same": [],
     "rooms": [
      "K15"
     ],
     "to": [],
     "levels": [],
-    "reach": [
-     "K5"
-    ]
+    "reach": []
    }
   },
   "feat:K15::f1#5@main": {
@@ -5641,17 +5606,13 @@
    },
    "secret": false,
    "links": {
-    "same": [
-     "feat:K5::cmu2uewz1#4@walls"
-    ],
+    "same": [],
     "rooms": [
      "K15"
     ],
     "to": [],
     "levels": [],
-    "reach": [
-     "K5"
-    ]
+    "reach": []
    }
   },
   "feat:K15::f1#6@main": {
@@ -34562,23 +34523,12 @@
     ],
     "to": [
      "K14",
-     "K28",
-     "K5"
+     "K28"
     ],
     "levels": [
      "main"
     ],
     "ways": [
-     {
-      "to": "K5",
-      "via": "feat:K15::f1#1@main",
-      "how": "marker"
-     },
-     {
-      "to": "K5",
-      "via": "feat:K5::cmu2uewz1#1@walls",
-      "how": "marker"
-     },
      {
       "to": "K14",
       "via": "feat:K14::f2#2@main",
@@ -37954,126 +37904,6 @@
     "levels": [],
     "reach": []
    }
-  },
-  "feat:K5::cmu2uewz1#1@walls": {
-   "levelId": "walls",
-   "shape": {
-    "type": "seg",
-    "x1": 1880.045,
-    "y1": 1301.15,
-    "x2": 1967.415,
-    "y2": 1301.15
-   },
-   "secret": false,
-   "links": {
-    "same": [
-     "feat:K15::f1#2@main"
-    ],
-    "rooms": [
-     "K5"
-    ],
-    "to": [],
-    "levels": [],
-    "reach": [
-     "K15"
-    ]
-   }
-  },
-  "feat:K5::cmu2uewz1#2@walls": {
-   "levelId": "walls",
-   "shape": {
-    "type": "seg",
-    "x1": 1748.99,
-    "y1": 1301.15,
-    "x2": 1792.675,
-    "y2": 1301.15
-   },
-   "secret": false,
-   "links": {
-    "same": [
-     "feat:K15::f1#1@main"
-    ],
-    "rooms": [
-     "K5"
-    ],
-    "to": [],
-    "levels": [],
-    "reach": [
-     "K15"
-    ]
-   }
-  },
-  "feat:K5::cmu2uewz1#3@walls": {
-   "levelId": "walls",
-   "shape": {
-    "type": "seg",
-    "x1": 2054.7850000000003,
-    "y1": 1301.15,
-    "x2": 2098.4700000000003,
-    "y2": 1301.15
-   },
-   "secret": false,
-   "links": {
-    "same": [
-     "feat:K15::f1#4@main"
-    ],
-    "rooms": [
-     "K5"
-    ],
-    "to": [],
-    "levels": [],
-    "reach": [
-     "K15"
-    ]
-   }
-  },
-  "feat:K5::cmu2uewz1#4@walls": {
-   "levelId": "walls",
-   "shape": {
-    "type": "seg",
-    "x1": 1705.305,
-    "y1": 1344.835,
-    "x2": 1661.6200000000001,
-    "y2": 1388.5200000000002
-   },
-   "secret": false,
-   "links": {
-    "same": [
-     "feat:K15::f1#5@main"
-    ],
-    "rooms": [
-     "K5"
-    ],
-    "to": [],
-    "levels": [],
-    "reach": [
-     "K15"
-    ]
-   }
-  },
-  "feat:K5::cmu2uewz1#5@walls": {
-   "levelId": "walls",
-   "shape": {
-    "type": "seg",
-    "x1": 2142.155,
-    "y1": 1344.835,
-    "x2": 2185.84,
-    "y2": 1388.5200000000002
-   },
-   "secret": false,
-   "links": {
-    "same": [
-     "feat:K15::f1#4@main"
-    ],
-    "rooms": [
-     "K5"
-    ],
-    "to": [],
-    "levels": [],
-    "reach": [
-     "K15"
-    ]
-   }
   }
  },
  "customFeatures": {
@@ -38207,12 +38037,7 @@
    "feat:K1::f1#1@walls|feat:K7::f1#1@main",
    "feat:K1::f3#1@walls|feat:K25::f1#1@court",
    "feat:K23::f6#1@main|feat:K3::f2#1@walls",
-   "feat:K6::f4#1@walls|feat:K88::f2#2@dungeon",
-   "feat:K15::f1#5@main|feat:K5::cmu2uewz1#4@walls",
-   "feat:K15::f1#1@main|feat:K5::cmu2uewz1#2@walls",
-   "feat:K15::f1#2@main|feat:K5::cmu2uewz1#1@walls",
-   "feat:K15::f1#4@main|feat:K5::cmu2uewz1#3@walls",
-   "feat:K15::f1#4@main|feat:K5::cmu2uewz1#5@walls"
+   "feat:K6::f4#1@walls|feat:K88::f2#2@dungeon"
   ],
   "notSame": [],
   "conn": [],

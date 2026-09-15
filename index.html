@@ -15,6 +15,10 @@
     <select id="levelSelect"></select>
   </label>
 
+  <label class="ctl">Maps
+    <select id="packSelect" title="Which folder of battlemap sheets to draw"></select>
+  </label>
+
   <label class="ctl chk"><input type="checkbox" id="playerMap"> Player map</label>
 
   <span class="sep"></span>
@@ -102,6 +106,10 @@
       <div class="filters" id="typeFilters"></div>
     </div>
     <div id="featureList" class="scroll"></div>
+    <div class="linkSplit" id="linkSplit">
+      <button id="linkToggle" class="textToggle">Links <span id="linkCount" class="tally"></span><span class="caret">&#9662;</span></button>
+      <div id="linkPanel" class="scroll linkPanel"></div>
+    </div>
     <div class="textSplit">
       <button id="textToggle" class="textToggle">Module text <span class="caret">▾</span></button>
       <div id="roomText" class="scroll roomText"></div>
@@ -155,6 +163,24 @@
     <button id="addCancel" class="ghost">Cancel</button>
     <span class="spacer"></span>
     <button id="addSave" class="primary">Add</button>
+  </div>
+</dialog>
+
+<!-- ---------------- connect-to-room dialog ---------------- -->
+<dialog id="connDialog">
+  <h2>Connect <span id="connFrom"></span> to another area</h2>
+  <p class="dlgNote">A connection says the two areas lead to one another. Use this for ways
+    through that the map cannot show on its own &mdash; a stair between sheets, a shaft, a passage
+    the book only describes in words. Marked doors already connect the rooms they sit between.</p>
+  <label class="full">Area
+    <input type="text" id="connSearch" list="connRooms" placeholder="e.g. K20, or chapel" autocomplete="off">
+    <datalist id="connRooms"></datalist>
+  </label>
+  <div id="connHits" class="connHits"></div>
+  <div class="dlgRow">
+    <button id="connCancel" class="ghost">Close</button>
+    <span class="spacer"></span>
+    <button id="connPick" class="ghost">Pick on the map</button>
   </div>
 </dialog>
 

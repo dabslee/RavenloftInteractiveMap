@@ -8,9 +8,15 @@ Run this from the folder it lives in:
 
 It serves the mapping interface at http://localhost:8731, a read-only reader
 at http://localhost:8731/browse, and reads the
-battlemaps straight off disk from ../References/img. Every edit you make in
-the browser is written to  castle-ravenloft-annotations.json  next to this
-file. Nothing leaves your machine.
+battlemaps straight off disk from ../References/img/map_packs. Every edit you
+make in the browser is written to  castle-ravenloft-annotations.json  next to
+this file. Nothing leaves your machine.
+
+Map packs: each folder under References/img/map_packs is an interchangeable set
+of battlemaps, named by the file names in map_packs/default. Drop a new folder
+in beside them, put any of those file names inside, and it shows up in the pack
+picker in both the editor and the reader; anything the pack leaves out falls
+back to default. An optional pack.json in the folder gives it a display name.
 
 Options:
     --port 8731      change the port
@@ -19,6 +25,7 @@ Options:
 """
 import argparse
 import base64
+import copy
 import http.server
 import json
 import mimetypes
@@ -40,6 +47,9 @@ EXPORTS = os.path.join(HERE, "exports")
 mimetypes.add_type("image/webp", ".webp")
 mimetypes.add_type("application/json", ".json")
 
+MAP_PACKS = os.path.join("References", "img", "map_packs")
+DEFAULT_PACK = "default"
+
 EMPTY = {
     "version": 1,
     "updated": None,
@@ -49,24 +59,29 @@ EMPTY = {
     "hiddenFeatures": [],
     "roomStatus": {},
     "roomNotes": {},
+    # links you made or refused by hand, as pairs joined by a bar; everything
+    # else under "links" on a mark is worked out from the marks themselves
+    "linkEdits": {"same": [], "notSame": [], "conn": [], "notConn": []},
 }
 
 _lock = threading.Lock()
 
 
 def load_annotations():
+    # deep copies throughout: EMPTY holds nested defaults, and handing the same
+    # objects out twice would let one request's edits show up in another's
     if not os.path.exists(ANNOTATIONS):
-        return dict(EMPTY)
+        return copy.deepcopy(EMPTY)
     try:
         with open(ANNOTATIONS, encoding="utf-8") as fh:
             data = json.load(fh)
         for k, v in EMPTY.items():
-            data.setdefault(k, v)
+            data.setdefault(k, copy.deepcopy(v))
         return data
     except Exception as exc:  # corrupt file: keep it, start clean
         sys.stderr.write("! could not read %s (%s); starting from empty\n"
                          % (ANNOTATIONS, exc))
-        return dict(EMPTY)
+        return copy.deepcopy(EMPTY)
 
 
 def save_annotations(data):
@@ -97,6 +112,73 @@ def _trim_backups(keep=40):
             os.remove(os.path.join(BACKUPS, f))
     except Exception:
         pass
+
+
+# ------------------------------------------------------------------ map packs
+def _webp_size(path):
+    """Width and height straight out of a WebP header, without an image library."""
+    try:
+        with open(path, "rb") as fh:
+            d = fh.read(32)
+        if len(d) < 30 or d[:4] != b"RIFF" or d[8:12] != b"WEBP":
+            return None
+        fmt = d[12:16]
+        if fmt == b"VP8X":
+            return (int.from_bytes(d[24:27], "little") + 1,
+                    int.from_bytes(d[27:30], "little") + 1)
+        if fmt == b"VP8L":
+            bits = int.from_bytes(d[21:25], "little")
+            return ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+        if fmt == b"VP8 ":
+            return (int.from_bytes(d[26:28], "little") & 0x3FFF,
+                    int.from_bytes(d[28:30], "little") & 0x3FFF)
+    except Exception:
+        pass
+    return None
+
+
+def list_map_packs(root):
+    """Every folder under References/img/map_packs, with the sheets it carries.
+
+    A pack only has to hold the sheets it actually replaces: the browser falls
+    back to the default pack for anything missing, which is why each file is
+    reported with its pixel size -- a sheet that is not the size the grid was
+    measured against gets drawn scaled, and the editor says so.
+    """
+    base = os.path.join(root, *MAP_PACKS.split(os.sep))
+    packs = []
+    if not os.path.isdir(base):
+        return {"base": MAP_PACKS.replace(os.sep, "/"), "default": DEFAULT_PACK, "packs": packs}
+    for name in sorted(os.listdir(base)):
+        folder = os.path.join(base, name)
+        if not os.path.isdir(folder) or name.startswith("."):
+            continue
+        meta = {}
+        manifest = os.path.join(folder, "pack.json")
+        if os.path.isfile(manifest):
+            try:
+                with open(manifest, encoding="utf-8") as fh:
+                    meta = json.load(fh) or {}
+            except Exception as exc:
+                sys.stderr.write("! bad %s (%s); ignoring it\n" % (manifest, exc))
+        files = {}
+        for f in sorted(os.listdir(folder)):
+            full = os.path.join(folder, f)
+            if not os.path.isfile(full) or not f.lower().endswith(
+                    (".webp", ".png", ".jpg", ".jpeg")):
+                continue
+            size = _webp_size(full) if f.lower().endswith(".webp") else None
+            files[f] = {"bytes": os.path.getsize(full),
+                        "w": size[0] if size else None,
+                        "h": size[1] if size else None}
+        packs.append({
+            "id": name,
+            "name": meta.get("name") or name.replace("_", " ").title(),
+            "note": meta.get("note") or "",
+            "files": files,
+        })
+    packs.sort(key=lambda p: (p["id"] != DEFAULT_PACK, p["id"]))
+    return {"base": MAP_PACKS.replace(os.sep, "/"), "default": DEFAULT_PACK, "packs": packs}
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -163,6 +245,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._file(os.path.join(HERE, "browse.html"))
         if path == "/api/annotations":
             return self._json(200, load_annotations())
+        if path == "/api/map-packs":
+            return self._json(200, list_map_packs(self.project_root))
         if path == "/api/info":
             return self._json(200, {
                 "root": self.project_root,
@@ -246,10 +330,18 @@ def main():
         sys.stderr.write(
             "! No References/img folder under %s\n"
             "  Put this script's folder inside your Ravenloft folder, or pass --root.\n" % root)
+    packs = list_map_packs(root)["packs"]
+    if not packs:
+        sys.stderr.write(
+            "! No map packs under %s\n"
+            "  The battlemaps belong in map_packs/default inside References/img.\n"
+            % os.path.join(root, *MAP_PACKS.split(os.sep)))
 
     url = "http://localhost:%d/" % args.port
     print("Castle Ravenloft VTT mapper")
-    print("  maps from   : %s" % img)
+    print("  maps from   : %s" % os.path.join(root, *MAP_PACKS.split(os.sep)))
+    print("  map packs   : %s" % (", ".join(
+        "%s (%d sheets)" % (p["id"], len(p["files"])) for p in packs) or "none found"))
     print("  saving to   : %s" % ANNOTATIONS)
     print("  exports to  : %s" % EXPORTS)
     print("  open        : %s" % url)

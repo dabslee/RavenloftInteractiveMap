@@ -38,6 +38,9 @@ Nothing is uploaded and nothing is installed: Python standard library only.
 | `curation.py` | the room-by-room corrections applied on top of the text extraction |
 | `tools/` | the scripts that traced the first-pass outlines, classified open edges, and seeded heights |
 
+The battlemaps themselves live outside this folder, in
+`References/img/map_packs/`, one folder per set. See [Map packs](#map-packs).
+
 ## What is in the data
 
 150 areas: K1-K88, the eight cells each in K74 and K75, and all 40 catacomb crypts,
@@ -120,6 +123,7 @@ marked it, and jump you there.
 | T | point |
 | W | wall: drag to lay a wall inside a room |
 | E | edges: click an outline edge to switch it between wall and open |
+| L | link: tie the selected marker to another, or the room to another area |
 | 1 / 2 / 3 | new area · add to it · subtract from it |
 | F | fit the map to the window |
 | G | toggle the grid |
@@ -217,10 +221,143 @@ works out the connections itself and keeps them current as you draw.
 - Marks also record the other sheets the same entry appears on, which is how K18, K20
   and K21 keep track of themselves across four maps.
 
-All of it is derived from the marks and the module text, so nothing to maintain: move a
-door and the links follow. Each mark carries its own copy in the annotations file under
-`links`, and the export writes them into the notes file as `sameAs`, `rooms`,
-`leadsTo` and `alsoOnSheets`.
+All of it is derived from the marks and the module text, so there is nothing to maintain
+in the ordinary case: move a door and the links follow. Each mark carries its own copy in
+the annotations file under `links`, and the export writes them into the notes file as
+`sameAs`, `rooms`, `leadsTo` and `alsoOnSheets`.
+
+### One place it is worked out
+
+Connections are derived **once**, by the editor, and written onto every room outline as
+`links.ways`. The Connects-to panel here and the reader's "ways in and out" both render
+that list and neither works anything out for itself, so the two cannot disagree. Each way
+records what makes it a way:
+
+| `how` | `via` | what it means |
+|---|---|---|
+| `marker` | a mark key | a door, stair or archway drawn on the map |
+| `open` | a room mark key | two outlines that run together along an open edge |
+| `text` | a feature id | the module describes it, but nothing is marked yet |
+| `hand` | `null` | you connected them in the editor |
+
+A passage joins the room whose checklist it is on to each other end it reaches: the rooms
+its outline meets, and the rooms its own label names. That room is the hub. Two rooms that
+merely both touch one marker are **not** thereby joined to each other, which is what used
+to invent a staircase between a bedchamber and a hall two floors above it when the stair's
+outline overlapped the bedchamber by a few pixels.
+
+Two entries you have tied together as the same thing count as one way, not two, and the
+row you see is the one on the room's own checklist. This is judged entry against entry,
+not placement against placement: a row stands for a whole entry however many times it is
+placed, so it is enough that any placement of the one is a twin of any placement of the
+other. A marker placed several times is still one way. And where the map already accounts
+for a room, the book's guess is dropped rather than listed twice.
+
+Two entries that reach the same room but have **not** been tied together stay as two rows.
+That is deliberate: sometimes they really are two passages (K47 has two doors to K48), and
+sometimes they are the two sides of one passage nobody has tied yet. The second row is the
+tool telling you which pair still wants a link.
+
+The chips beside a marker come from the same one place: `links.reach`, the rooms that
+marker reaches, which the editor works out and both views read. A pair you have struck out
+is left out of it, so saying two rooms do not connect clears the chips and the reader's
+badges as well as the connection rows, rather than leaving a marker still advertising it.
+
+Because the reader only reads, an annotations file written before this existed has no
+`ways` on it and the reader will say so in its breadcrumb rather than show every room as a
+dead end: open the editor once and let it save.
+
+One thing worth knowing about `rooms`, which feeds all of the above: a marker drawn as a
+point is credited to every outline within half a grid square &mdash; five feet &mdash; of
+it. That is deliberate, because a door sits *in* a wall and belongs to the rooms on both
+sides of it, and without reaching across it would belong to neither. The cost is that any
+point marker within five feet of a party wall also picks up the room on the other side. If
+that gives you a link you do not want, nudge the marker a little further in, or strike the
+pair out.
+
+### Correcting them by hand
+
+Proximity cannot see everything. Two flights of stairs that are the same flight never
+touch, because they are drawn on different sheets. A passage the book only describes in
+prose has nothing on the map to derive from at all. And now and then two doors that are
+genuinely two doors get paired because they sit a few pixels apart. So every link can be
+made and broken by hand, in the **Links** panel under the feature list.
+
+The panel has two halves. **Same thing as** works on the marker selected right now, and
+lists every other placement the app considers the same physical thing. **Connects to**
+works on the room selected right now, and lists everywhere it leads.
+
+- **+ Same as another marker…** arms the map. Click the marker that is the same thing and
+  the two are tied together. You can change sheets before clicking, which is the whole
+  point: that is how the stair on the main floor meets itself on the floor above.
+- A link belongs to **one placement**, not to the checklist entry. Five windows placed
+  from one entry are five markers, and each wants its own twin; tying all five of the
+  far side's windows to one of yours makes that one window reach the far room and leaves
+  the other four with nothing. While an entry with several placements is selected the map
+  numbers them, filled in for the ones that already have a twin, and the panel says which
+  placement you are linking and lists the others with their status.
+- **+ Connect to an area…** opens a searchable list of all 150 areas. **Pick on the map**
+  arms the map instead, and the next room outline you click is connected.
+- **×** on any row breaks that link, both ways and from both ends. If it was one the app
+  worked out for itself, breaking it is remembered as a refusal, so a later redraw does not
+  put it back. On a connection it drops *every* way between the two rooms, not just that
+  row's evidence.
+- A pair you have struck out stays listed, greyed and crossed through, with **restore** to
+  take the strike-out back. If the app can still work the link out for itself it comes back
+  as its own; if it cannot, it comes back as yours.
+- Each connection row names the thing that makes it a connection, and **via** jumps to that
+  marker. If a connection looks wrong, that tells you which marker to go and look at.
+- **L** arms the picker from the keyboard, **Esc** stands it down.
+
+Every row says where its link came from: **by hand** if you made it, **found** if the app
+worked it out, **from text** if the module says so but nothing is marked yet. Linking
+stairs across sheets is worth doing because calling two markers the same thing joins the
+rooms at both their ends, so a stair linked between two floors connects the room below to
+the room above without any further work.
+
+While a marker or room is selected the map draws thin dashed threads to whatever it is
+tied to on the sheet showing, so a link is something you can see and not just a claim in
+a list.
+
+Your corrections live in the annotations file under `linkEdits`, as four lists of pairs:
+`same` and `conn` for the links you made, `notSame` and `notConn` for the ones you
+refused. They ride the undo stack with everything else, and deleting a marker takes its
+links with it.
+
+## Map packs
+
+The battlemaps are not referenced one by one any more. They live in
+
+```
+References/img/map_packs/
+  default/     the sheets as published with Curse of Strahd
+  dm_andy/     DM Andy's redraws
+```
+
+and `castle-data.json` names every sheet inside `map_packs/default`. The **Maps** picker
+in the toolbar — in the editor and in the reader both — swaps that one path segment, so
+choosing another pack redraws the same castle under the same marks. Nothing about your
+annotations changes: marks are in map pixels, and a pack is expected to match the sheet
+it replaces pixel for pixel. The reader routes the battlemap figures printed with the
+module text through the picker too, so the sheet in the text matches the sheet on the
+canvas.
+
+**Adding a pack.** Make a folder next to the others and put any of the fourteen file
+names from `default/` inside it. That is the whole of it: the server lists the folders on
+disk, so it shows up in the picker the next time you load the page. A pack only has to
+hold the sheets it actually redraws — anything it leaves out falls back to `default`,
+which is what lets a pack replace a single floor.
+
+An optional `pack.json` in the folder gives it a proper name in the picker:
+
+```json
+{ "name": "DM Andy", "note": "Redraws at the same pixel dimensions as the official sheets." }
+```
+
+Without one the folder name is used. Each sheet's pixel size is read off its header when
+the list is built, and the picker says so if a sheet is not the size the grid for that
+floor was measured against; it is drawn stretched to fit, which keeps the marks in place
+but will look soft if the two really differ.
 
 ## Heights
 
@@ -318,6 +455,9 @@ it, its height, and where it leads.
 
 Moving between rooms on the same sheet glides the camera across rather than cutting, so
 you keep your bearings; a room on another sheet cuts, because the picture changes.
+
+The reader has the same **Maps** picker as the editor, and remembers your choice
+alongside it: both pages read `cr.pack` out of the browser's local storage.
 Middle-drag (or right-drag, or space-drag) always pans, whatever is under the cursor,
 and clicking the room you are already reading does nothing rather than following one of
 its doors.
@@ -330,8 +470,9 @@ Also drawn on lists the other sheets the same room appears on, each with the cli
 where you are now (up 240 ft, down 80 ft) and the floor it sits at. Click one to follow
 the room onto that sheet.
 
-Ways in and out is built from the same link data the editor derives, and it says how
-each connection is made rather than just that one exists: a door, a secret door, a
+Ways in and out renders the `links.ways` the editor wrote and derives nothing of its own,
+so it shows exactly what the editor's Connects-to panel shows, corrections included.
+It says how each connection is made rather than just that one exists: a door, a secret door, a
 spiral stair, a trapdoor, a ladder, a chute, a portcullis, an archway, a teleport, or an
 open boundary where two areas simply run together. Each row also says where it comes
 out: the floor at the far end when it is a different sheet, and for anything with a rise,
@@ -400,8 +541,10 @@ listing every marker with its room, label, and grid coordinates.
   one segment at a time.
 - Standalone **Wall** markers become line-of-sight too.
 - Light markers become lights.
-- Every marker in the notes file carries its **height** and its **links**, and the file
-  also lists the portals with the marks behind each one.
+- Every marker in the notes file carries its **height** and its **links**, corrections
+  included, and the file also lists the portals with the marks behind each one.
+- The image comes from whichever map pack is showing, so you can export the same castle
+  twice with two different sets of art and the geometry will be identical.
 - The image is cropped to whole grid squares so the exported grid starts at 0,0 and
   needs no nudging in Foundry, Arkenforge, or Fantasy Grounds.
 - The grid dropdown defaults to splitting each drawn 10-foot square into 5-foot cells,

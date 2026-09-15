@@ -22,12 +22,14 @@ const TYPE_KEYS = Object.keys(TYPES).filter(k => k !== 'room');
 // ------------------------------------------------------------------ state
 let DATA = null;                       // castle-data.json
 let ANN = null;                        // annotations
+let PACKS = { base: 'References/img/map_packs', default: 'default', packs: [] };
 const ROOMS = new Map();               // id -> room
 const LEVELS = new Map();              // id -> level
 
 const S = {
   levelId: null,
   roomId: null,
+  mapPack: 'default',                  // which folder of battlemap sheets to draw
   target: null,                        // {kind:'room'|'feat', id}
   tool: 'select',
   snap: 'corner',
@@ -46,6 +48,7 @@ const S = {
   hoverEdge: null,
   snapSuspended: false,   // Alt held: snap off until it is let go
   boolMode: 'new',       // new | add | sub, for area drawing
+  picking: null,         // {mode:'same'|'conn', from} while the map is armed to name a link
 };
 
 const imgCache = new Map();
@@ -62,14 +65,19 @@ const ctx = canvas.getContext('2d');
 //  boot
 // ==================================================================
 (async function boot() {
-  const [d, a] = await Promise.all([
+  const [d, a, packs] = await Promise.all([
     fetch('/castle-data.json').then(r => r.json()),
     fetch('/api/annotations').then(r => r.json()),
+    fetch('/api/map-packs').then(r => r.json()).catch(() => null),
   ]);
   DATA = d; ANN = a;
+  if (packs && packs.packs) PACKS = packs;
+  S.mapPack = pickPack(localStorage.getItem('cr.pack'));
   ANN.grids ||= {}; ANN.marks ||= {}; ANN.customFeatures ||= {};
   ANN.hiddenFeatures ||= []; ANN.roomStatus ||= {}; ANN.roomNotes ||= {};
   ANN.renames ||= {};
+  ANN.linkEdits ||= {};
+  for (const k of ['same', 'notSame', 'conn', 'notConn']) ANN.linkEdits[k] ||= [];
   ANN.hiddenFeatures = [...new Set(ANN.hiddenFeatures)];
   // marks used to be keyed without a level; move them onto their own level
   for (const [k, m] of Object.entries(ANN.marks)) {
@@ -104,6 +112,7 @@ const ctx = canvas.getContext('2d');
 
   relink();
   buildLevelSelect();
+  buildPackSelect();
   buildTypeFilters();
   buildAddTypes();
   wire();
@@ -174,6 +183,7 @@ const HISTORY = { undo: [], redo: [], limit: 150, lastTag: null, lastAt: 0 };
 const snapshot = () => JSON.stringify({
   marks: ANN.marks, customFeatures: ANN.customFeatures,
   hiddenFeatures: ANN.hiddenFeatures, grids: ANN.grids, renames: ANN.renames,
+  linkEdits: ANN.linkEdits,
 });
 
 /** Record the state as it is now, before a change. `tag` coalesces a burst of
@@ -200,6 +210,8 @@ function applySnapshot(json) {
   ANN.hiddenFeatures = o.hiddenFeatures;
   ANN.grids = o.grids;
   ANN.renames = o.renames || {};
+  ANN.linkEdits = o.linkEdits || { same: [], notSame: [], conn: [], notConn: [] };
+  for (const k of ['same', 'notSame', 'conn', 'notConn']) ANN.linkEdits[k] ||= [];
   if (S.sel && !ANN.marks[S.sel]) S.sel = null;
   S.draft = null; S.drag = null;
   save();
@@ -343,9 +355,82 @@ function buildLevelSelect() {
     .map(l => `<option value="${l.id}">${l.name}</option>`).join('');
 }
 
-function mapUrl(level, player) {
-  const p = player && level.playerMap ? level.playerMap : level.dmMap;
-  return '/maps/' + p.split('/').map(encodeURIComponent).join('/');
+// ------------------------------------------------------------------ map packs
+// A pack is a folder of battlemap sheets that stands in for the published set.
+// castle-data.json names every sheet inside map_packs/default, so swapping packs
+// is a matter of swapping that one path segment. A pack only has to hold the
+// sheets it actually redraws: anything it leaves out falls back to default, which
+// is what lets a pack replace a single floor. Marks are not touched by any of
+// this -- they are in map pixels, and a pack is expected to match the sheet it
+// replaces pixel for pixel. When one does not, the sheet is drawn stretched to
+// the measured size and the picker says so.
+const PACK_SEG = /(References\/img\/map_packs\/)[^/]+\//;
+
+const packById = id => (PACKS.packs || []).find(p => p.id === id) || null;
+const sheetFile = (level, player) =>
+  ((player && level.playerMap) ? level.playerMap : level.dmMap).split('/').pop();
+const packFile = (id, file) => (packById(id)?.files || {})[file] || null;
+
+/** A pack id that exists, falling back to the default set. */
+function pickPack(id) {
+  if (id && packById(id)) return id;
+  const dflt = PACKS.default || 'default';
+  return packById(dflt) ? dflt : (PACKS.packs?.[0]?.id || dflt);
+}
+
+/** Which pack actually supplies a level's sheet: the chosen one, or default. */
+function packFor(level, player, want = S.mapPack) {
+  const file = sheetFile(level, player);
+  if (packFile(want, file)) return want;
+  return PACKS.default || 'default';
+}
+
+/** The on-disk path of a level's sheet under the pack showing now. */
+function sheetPath(level, player, want = S.mapPack) {
+  const base = (player && level.playerMap) ? level.playerMap : level.dmMap;
+  const use = packFor(level, player, want);
+  return PACK_SEG.test(base) ? base.replace(PACK_SEG, '$1' + use + '/') : base;
+}
+
+function mapUrl(level, player, want = S.mapPack) {
+  return '/maps/' + sheetPath(level, player, want).split('/').map(encodeURIComponent).join('/');
+}
+
+/** '', or a warning that this pack's sheet is not the size the grid was measured on. */
+function packSizeNote(level, player, want = S.mapPack) {
+  const f = packFile(packFor(level, player, want), sheetFile(level, player));
+  if (!f || !f.w || !f.h) return '';
+  if (f.w === level.width && f.h === level.height) return '';
+  return `${f.w}×${f.h}, not the ${level.width}×${level.height} this sheet was measured at`;
+}
+
+function buildPackSelect() {
+  const sel = $('#packSelect');
+  if (!sel) return;
+  sel.innerHTML = (PACKS.packs || [])
+    .map(p => `<option value="${esc(p.id)}">${esc(p.name)}</option>`).join('')
+    || '<option value="default">default</option>';
+  sel.value = S.mapPack;
+  const p = packById(S.mapPack);
+  sel.title = p && p.note ? p.note : 'Which folder of battlemap sheets to draw';
+}
+
+/** Swap the sheets under the marks. Nothing about the annotations changes. */
+async function setPack(id) {
+  const next = pickPack(id);
+  if (next === S.mapPack) return;
+  S.mapPack = next;
+  localStorage.setItem('cr.pack', next);
+  buildPackSelect();
+  await setLevel(S.levelId);
+  const lv = LEVELS.get(S.levelId);
+  const p = packById(next);
+  const from = packFor(lv, S.playerMap);
+  const warn = packSizeNote(lv, S.playerMap);
+  hint(`Sheets from <b>${esc(p ? p.name : next)}</b>.`
+    + (from !== next ? ' This floor is not in that pack, so the default sheet is showing.' : '')
+    + (warn ? ` <b>Heads up:</b> that sheet is ${esc(warn)}, so it is drawn stretched to fit.` : '')
+    + ' Your marks are untouched.');
 }
 
 function loadImage(url) {
@@ -471,6 +556,7 @@ function draw() {
   }
   if (S.showGrid) drawGrid(lv);
   drawMarks(lv);
+  drawLinks();
   drawDraft();
   ctx.restore();
 }
@@ -529,6 +615,89 @@ function drawMarks(lv) {
     drawShape(m.shape, t.color, isSel || isTarget, sc, quiet ? null : meta, m);
     ctx.globalAlpha = 1;
   }
+}
+
+/** Thin dashed threads from the selection to whatever it is tied to, so a link
+ *  is something you can see on the map and not just a claim in a list. Only
+ *  the ends that are on this sheet can be drawn; the rest are in the panel. */
+function drawLinks() {
+  const sel = S.sel && ANN.marks[S.sel];
+  const sc = S.view.scale;
+
+  if (S.picking) {                                  // ring the end you started from
+    const m = S.picking.mode === 'same'
+      ? ANN.marks[S.picking.from]
+      : ANN.marks[mid('room', S.picking.from, S.levelId)];
+    const c = m && m.levelId === S.levelId && shapeCenter(m.shape);
+    if (c) {
+      ctx.save();
+      ctx.strokeStyle = '#e4b363';
+      ctx.lineWidth = 2 / sc;
+      ctx.setLineDash([5 / sc, 4 / sc]);
+      ctx.beginPath();
+      ctx.arc(c[0], c[1], 16 / sc, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // a feature placed more than once gets its placements numbered while it is
+  // selected, because links are made placement by placement: the "#5" you are
+  // linking is one of these windows, not the whole row of them
+  if (S.target && S.target.kind === 'feat') {
+    const places = placementsOf(S.target.id);
+    if (places.length > 1) {
+      ctx.save();
+      ctx.font = '700 ' + (11 / sc) + 'px Inter, Segoe UI, sans-serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      for (const [k, m] of places) {
+        const c = shapeCenter(m.shape);
+        if (!c) continue;
+        const n = splitKey(k).inst;
+        const tied = (LINKS.get(k)?.same || []).length > 0;
+        const r = 9 / sc;
+        const x = c[0] + 14 / sc, y = c[1] - 14 / sc;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fillStyle = tied ? '#c3aaff' : '#2c2640';
+        ctx.fill();
+        ctx.lineWidth = 1.5 / sc; ctx.strokeStyle = k === S.sel ? '#fff' : '#1b1826';
+        ctx.stroke();
+        ctx.fillStyle = tied ? '#1b1826' : '#cbb9ff';
+        ctx.fillText(String(n), x, y + 0.5 / sc);
+      }
+      ctx.restore();
+    }
+  }
+
+  if (!sel) return;
+  const rec = LINKS.get(S.sel);
+  const a = rec && shapeCenter(sel.shape);
+  if (!a) return;
+  const ends = [];
+  for (const k of rec.same) {
+    const m = ANN.marks[k];
+    if (m && m.levelId === S.levelId) ends.push([shapeCenter(m.shape), '#c3aaff']);
+  }
+  if (splitKey(S.sel).kind === 'room') {
+    for (const id of rec.to) {
+      const m = ANN.marks[mid('room', id, S.levelId)];
+      if (m) ends.push([shapeCenter(m.shape), '#7fb8e8']);
+    }
+  }
+  if (!ends.length) return;
+  ctx.save();
+  ctx.lineWidth = 1.6 / sc;
+  ctx.globalAlpha = 0.85;
+  for (const [b, color] of ends) {
+    if (!b) continue;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.setLineDash([7 / sc, 5 / sc]);
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(b[0], b[1], 3.5 / sc, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.restore();
 }
 
 // one reusable layer, used to punch subtract parts out of add parts exactly
@@ -1283,9 +1452,298 @@ function roomsTouching(m, index, g) {
   return [...found];
 }
 
+// ------------------------------------------------------------------ by hand
+// Geometry gets the common cases right but not all of them. Two flights of
+// stairs that are the same stair never touch, because they are drawn on
+// different sheets; a passage the book only describes in prose has nothing on
+// the map to derive from at all; and now and then the proximity rule pairs two
+// doors that really are two doors. So every derived link can be added to and
+// struck out by hand, and those decisions are what get saved. A pair is one
+// string with its two ends sorted and joined by a bar, so it reads the same
+// from either side and survives a round trip through JSON.
+const pairKey = (a, b) => (a < b ? a + '|' + b : b + '|' + a);
+const pairOf = s => s.split('|');
+
+/** What geometry alone made of each mark, kept so the UI can say which links
+ *  are its own doing and which are yours. */
+const AUTO = new Map();
+
+/**
+ * Every way out of every room, with the thing that makes it a way.
+ *
+ * This is the single source of truth for what connects to what. The Connects-to
+ * panel here and the reader's "ways in and out" both render exactly this list,
+ * so the two cannot drift apart -- which they did, when each worked it out for
+ * itself and only one of them knew about your corrections.
+ *
+ *   room id -> [{ to, via, how }]
+ *     how 'marker'  via is a mark key: a door or stair drawn on the map
+ *     how 'open'    via is a room mark key: two outlines that run together
+ *     how 'text'    via is a feature id the book describes but nothing places
+ *     how 'hand'    via is null: you said so in the editor
+ */
+const WAYS = new Map();
+
+/** room mark key -> the rooms its open edges run into. Filled in per sheet,
+ *  where the geometry is, and spent in buildWays. */
+const OPEN_EDGES = new Map();
+
+/** Every way out of a room. */
+const waysOf = roomId => WAYS.get(roomId) || [];
+
+const edits = which => (ANN.linkEdits && ANN.linkEdits[which]) || [];
+const hasEdit = (which, a, b) => edits(which).includes(pairKey(a, b));
+
+/** Would geometry alone have paired these two marks? */
+const autoLink = (a, b) => (AUTO.get(a)?.same || []).includes(b);
+
+/** Is this link standing right now, however it got there? */
+const linkedNow = (which, a, b) => which === 'same'
+  ? (LINKS.get(a)?.same || []).includes(b)
+  : waysOf(a).some(w => w.to === b);
+
+/** How a link came about: 'hand' if you made it, 'auto' if the app did, '' if
+ *  there is no link at all. Connections carry their evidence on each way, so
+ *  this only has to answer for the pair as a whole. */
+function linkSource(which, a, b) {
+  if (hasEdit(which === 'same' ? 'notSame' : 'notConn', a, b)) return '';
+  if (hasEdit(which, a, b)) return 'hand';
+  if (which === 'same') return autoLink(a, b) ? 'auto' : '';
+  const ws = waysOf(a).filter(w => w.to === b);
+  if (!ws.length) return '';
+  return ws.every(w => w.how === 'hand') ? 'hand'
+       : ws.some(w => w.how !== 'text') ? 'auto' : 'text';
+}
+
+/** Fold your same-as corrections into the derived ones. Runs inside relink,
+ *  before the ways are built, because two marks called the same thing are a
+ *  way between the rooms at their two ends. */
+function applySameEdits() {
+  AUTO.clear();
+  for (const [k, rec] of LINKS) AUTO.set(k, { same: [...rec.same] });
+
+  // -- the same physical thing, marked twice ------------------------------
+  const struck = new Set(edits('notSame'));
+  const byKey = new Map();
+  for (const s of edits('same')) {
+    const [a, b] = pairOf(s);
+    if (a === b || !ANN.marks[a] || !ANN.marks[b]) continue;      // a mark that has gone
+    if (splitKey(a).kind !== 'feat' || splitKey(b).kind !== 'feat') continue;
+    if (!byKey.has(a)) byKey.set(a, []);
+    if (!byKey.has(b)) byKey.set(b, []);
+    byKey.get(a).push(b); byKey.get(b).push(a);
+  }
+  for (const [k, rec] of LINKS) {
+    if (splitKey(k).kind !== 'feat') continue;
+    const out = new Set([...rec.same, ...(byKey.get(k) || [])]);
+    out.delete(k);
+    for (const other of [...out]) if (struck.has(pairKey(k, other))) out.delete(other);
+    rec.same = [...out].sort();
+  }
+
+}
+
+// ------------------------------------------------------------------ the ways
+/** Note a way between two rooms, both directions, once per piece of evidence. */
+function addWay(from, to, via, how) {
+  if (!from || !to || from === to) return;
+  if (!ROOMS.has(from) || !ROOMS.has(to)) return;
+  const put = (a, b) => {
+    if (!WAYS.has(a)) WAYS.set(a, []);
+    const list = WAYS.get(a);
+    // an outline running into another, or a connection you made, is one fact
+    // however many outlines of the two rooms happen to record it; a marker is
+    // told apart by which checklist entry it is, not which placement of it
+    const mine = how === 'marker' ? splitKey(via).id : how;
+    if (list.some(w => w.to === b && w.how === how
+                    && (how === 'marker' ? splitKey(w.via).id === mine : true))) return;
+    list.push({ to: b, via, how });
+  };
+  put(from, to);
+  put(to, from);
+}
+
+/**
+ * Work out every way out of every room, from the marks, the module text and
+ * your corrections. Runs once per relink, after the same-as links are settled.
+ */
+function buildWays() {
+  WAYS.clear();
+
+  // -- passages drawn on a map -------------------------------------------
+  // A passage joins the room whose checklist it is on to each other end it
+  // reaches: the rooms its outline meets, and the rooms its own label names.
+  // That room is the hub. Two rooms that merely both touch one marker are not
+  // thereby joined to each other -- that cross-product is what used to invent a
+  // stair between a bedchamber and a hall two floors above it, because the
+  // stair's outline happened to overlap the bedchamber by a few pixels.
+  for (const [k, rec] of LINKS) {
+    if (splitKey(k).kind !== 'feat') continue;
+    const meta = markMeta(k);
+    if (!isPassage(meta) || !meta.roomId) continue;
+    const ends = new Set([...rec.rooms, ...rec.to]);
+    ends.delete(meta.roomId);
+    for (const end of ends) addWay(meta.roomId, end, k, 'marker');
+    // and wherever the marker it has been called the same thing as comes out
+    for (const twin of rec.same) {
+      if (!ANN.marks[twin]) continue;
+      addWay(meta.roomId, markMeta(twin).roomId, k, 'marker');
+    }
+  }
+
+  // -- outlines that run together ----------------------------------------
+  for (const [k, list] of OPEN_EDGES) {
+    for (const other of list) addWay(splitKey(k).id, other, k, 'open');
+  }
+
+  // -- what the book describes where nothing is marked yet ---------------
+  for (const r of DATA.rooms) {
+    for (const f of featuresOf(r.id)) {
+      if (!isPassage({ type: f.type, label: f.label })) continue;
+      if (hasMark('feat', f.id)) continue;          // placed: the marker speaks for it
+      for (const end of textTargets(f.label, r.id)) addWay(r.id, end, f.id, 'text');
+    }
+  }
+
+  // -- and what you said yourself ----------------------------------------
+  for (const e of edits('conn')) addWay(...pairOf(e), null, 'hand');
+
+  // entry id -> the entries any placement of it has been tied to
+  const twinsOf = new Map();
+  for (const [k, rec] of LINKS) {
+    if (splitKey(k).kind !== 'feat' || !rec.same.length) continue;
+    const id = splitKey(k).id;
+    if (!twinsOf.has(id)) twinsOf.set(id, new Set());
+    for (const t of rec.same) twinsOf.get(id).add(splitKey(t).id);
+  }
+
+  // -- minus the ones you struck out -------------------------------------
+  const cut = new Set(edits('notConn'));
+  for (const [room, list] of WAYS) {
+    let out = list.filter(w => !cut.has(pairKey(room, w.to)));
+    // a room the map already accounts for does not also need the book's guess
+    const drawn = new Set(out.filter(w => w.how !== 'text').map(w => w.to));
+    out = out.filter(w => w.how !== 'text' || !drawn.has(w.to));
+    // a door marked from both sides is one door, not two ways out: where two
+    // entries for the same destination have been tied together as the same
+    // thing, keep the nearer one -- this room's own entry. Tied at the level
+    // of the entry, not the placement: a row stands for a whole entry however
+    // many times it is placed, so it is enough that any placement of the one
+    // is a twin of any placement of the other
+    out = out.filter((w, i) => {
+      if (w.how !== 'marker') return true;
+      const tied = twinsOf.get(splitKey(w.via).id);
+      if (!tied) return true;
+      return !out.some((o, j) => {
+        if (o === w || o.how !== 'marker' || o.to !== w.to) return false;
+        if (!tied.has(splitKey(o.via).id)) return false;
+        const oHome = markMeta(o.via).roomId === room;
+        const wHome = markMeta(w.via).roomId === room;
+        return oHome !== wHome ? oHome : j < i;
+      });
+    });
+    out.sort((a, b) => a.to.localeCompare(b.to, undefined, { numeric: true })
+                    || String(a.via).localeCompare(String(b.via)));
+    WAYS.set(room, out);
+  }
+
+  // -- hang the answer on every outline of the room ----------------------
+  for (const [k, rec] of LINKS) {
+    const sk = splitKey(k);
+    if (sk.kind !== 'room') continue;
+    rec.ways = waysOf(sk.id);
+    rec.to = [...new Set(rec.ways.map(w => w.to))].sort();
+  }
+}
+
+/**
+ * What each marker reaches, for the chips beside it here and the badges in the
+ * reader. Its own room is left out; a pair you have said does not connect is
+ * left out too, so striking out a connection clears the chips as well as the
+ * ways rather than leaving the marker still advertising it.
+ */
+function buildReach() {
+  for (const [k, rec] of LINKS) {
+    if (splitKey(k).kind !== 'feat') continue;
+    const home = markMeta(k).roomId;
+    const out = new Set([...rec.rooms, ...rec.to]);
+    for (const twin of rec.same) {
+      if (!ANN.marks[twin]) continue;
+      out.add(markMeta(twin).roomId);
+      for (const r of (LINKS.get(twin)?.rooms || [])) out.add(r);
+    }
+    out.delete(home);
+    rec.reach = [...out]
+      .filter(id => ROOMS.has(id) && !hasEdit('notConn', home, id))
+      .sort();
+  }
+}
+
+/** How a room-to-room connection came about, for the panel to show. */
+const WAY_SOURCE = { marker: 'auto', open: 'auto', text: 'text', hand: 'hand' };
+
+/** Make or break one link. `which` is 'same' or 'conn'. */
+function setLink(which, a, b, on) {
+  if (a === b) return;
+  const negative = which === 'same' ? 'notSame' : 'notConn';
+  const key = pairKey(a, b);
+  if (on === linkedNow(which, a, b)) return;                 // already how you want it
+  pushHistory((on ? 'link ' : 'unlink ') + (which === 'same' ? 'markers' : 'rooms'));
+  const drop = (list, k) => { const i = list.indexOf(k); if (i >= 0) list.splice(i, 1); };
+  if (on) {
+    drop(ANN.linkEdits[negative], key);
+    if (!ANN.linkEdits[which].includes(key)) ANN.linkEdits[which].push(key);
+    relink();
+  } else {
+    drop(ANN.linkEdits[which], key);
+    relink();
+    // if it is still standing, something else derives it: say you do not want it
+    if (linkedNow(which, a, b)) {
+      if (!ANN.linkEdits[negative].includes(key)) ANN.linkEdits[negative].push(key);
+      relink();
+    }
+  }
+  save(); renderFeatures(); renderLinks(); needsDraw = true;
+}
+
+/** Take back a strike-out. If the app had worked the link out for itself, that
+ *  is enough and it comes back as its own; if it had not, it becomes yours. */
+function restoreLink(which, a, b) {
+  const negative = which === 'same' ? 'notSame' : 'notConn';
+  const key = pairKey(a, b);
+  if (!ANN.linkEdits[negative].includes(key)) return;
+  pushHistory('restore ' + (which === 'same' ? 'link' : 'connection'));
+  ANN.linkEdits[negative].splice(ANN.linkEdits[negative].indexOf(key), 1);
+  relink();
+  if (!linkedNow(which, a, b)) {
+    ANN.linkEdits[which].push(key);
+    relink();
+  }
+  save(); renderFeatures(); renderLinks(); needsDraw = true;
+}
+
+/** Struck-out pairs that mention this room or mark, so they can be put back. */
+function struckOut(which, id) {
+  const negative = which === 'same' ? 'notSame' : 'notConn';
+  return edits(negative)
+    .map(pairOf)
+    .filter(([a, b]) => a === id || b === id)
+    .map(([a, b]) => (a === id ? b : a));
+}
+
+/** Forget every hand-made link that mentions a mark, for when the mark goes. */
+function forgetLinksFor(keys) {
+  const gone = new Set(keys);
+  for (const which of ['same', 'notSame']) {
+    ANN.linkEdits[which] = edits(which)
+      .filter(s => !pairOf(s).some(k => gone.has(k)));
+  }
+}
+
 /** Recompute every link. Cheap enough to run after any edit. */
 function relink() {
   LINKS.clear();
+  OPEN_EDGES.clear();
   const byLevel = new Map();
   for (const [k, m] of Object.entries(ANN.marks)) {
     if (!m || !m.shape) continue;
@@ -1343,24 +1801,12 @@ function relink() {
       }
       LINKS.set(k, rec);
     }
-    // a room leads wherever its own doors and stairs lead
-    const leads = new Map();                    // room id -> set of room ids
-    const add = (from, to) => {
-      if (!leads.has(from)) leads.set(from, new Set());
-      to.forEach(x => leads.get(from).add(x));
-    };
-    for (const [k2] of feats) {
-      const r2 = LINKS.get(k2);
-      if (!r2) continue;
-      const meta2 = markMeta(k2);
-      if (!isPassage(meta2)) continue;
-      const touched = new Set([...r2.rooms, ...r2.to, meta2.roomId].filter(Boolean));
-      for (const home of touched) add(home, touched);
-    }
-    // an edge marked open is a way through as much as a door is
+    // an edge marked open is a way through as much as a door is; note which
+    // outline meets which, and let buildWays turn that into connections
     for (const [k, m] of entries) {
       if (splitKey(k).kind !== 'room' || !isArea(m.shape)) continue;
       const me = splitKey(k).id;
+      const met = new Set();
       for (const part of m.shape.parts) {
         const r = part.ring;
         for (let i = 0; i < r.length; i++) {
@@ -1372,20 +1818,17 @@ function relink() {
           const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
           for (const d of [-0.35, 0.35]) {
             for (const rid of roomsAtPoint(levelId, [mx + nx * g * d, my + ny * g * d], index)) {
-              if (rid !== me) { add(me, [rid]); add(rid, [me]); }
+              if (rid !== me) met.add(rid);
             }
           }
         }
       }
-    }
-    for (const [k] of entries) {
-      const sk = splitKey(k);
-      if (sk.kind !== 'room') continue;
-      const out = new Set(leads.get(sk.id) || []);
-      out.delete(sk.id);
-      LINKS.get(k).to = [...out].sort();
+      if (met.size) OPEN_EDGES.set(k, [...met]);
     }
   }
+  applySameEdits();
+  buildWays();
+  buildReach();
   // which sheets each entry is marked on
   const sheets = new Map();
   for (const k of Object.keys(ANN.marks)) {
@@ -1399,7 +1842,9 @@ function relink() {
     rec.levels = [...(sheets.get(sk.kind + ':' + sk.id) || [])].filter(l => l !== sk.levelId).sort();
     const m = ANN.marks[k];
     if (m) {
-      const any = rec.same.length || rec.rooms.length || rec.to.length || rec.levels.length;
+      const any = rec.same.length || rec.rooms.length || rec.to.length
+               || rec.levels.length || (rec.ways && rec.ways.length)
+               || (rec.reach && rec.reach.length);
       if (any) m.links = rec; else delete m.links;
     }
   }
@@ -1407,14 +1852,7 @@ function relink() {
 }
 
 /** Everything this mark is tied to, as one flat list of room ids. */
-function linkedRooms(key) {
-  const rec = LINKS.get(key);
-  if (!rec) return [];
-  const out = new Set([...rec.rooms, ...rec.to]);
-  for (const k of rec.same) out.add(markMeta(k).roomId);
-  out.delete(markMeta(key).roomId);
-  return [...out];
-}
+const linkedRooms = key => LINKS.get(key)?.reach || [];
 
 // ==================================================================
 //  sidebars
@@ -1466,6 +1904,7 @@ function renderFeatures() {
     titleEl.textContent = 'No room selected';
     listEl.innerHTML = '<div class="emptyNote">Pick a room on the left to see its doors and items.</div>';
     $('#roomText').innerHTML = '';
+    renderLinks();
     return;
   }
   const pr = roomProgress(r.id);
@@ -1532,6 +1971,266 @@ function renderFeatures() {
   listEl.innerHTML = html || '<div class="emptyNote">No entries match the type filter. Use <b>+ Add</b> to create one.</div>';
   $('#roomText').innerHTML = mdToHtml(r.text || '');
   renderHeight();
+  renderLinks();
+}
+
+// ------------------------------------------------------------------ links panel
+// Everything the geometry worked out, with a way to disagree with it: one list
+// for other placements of the same physical thing, one for the areas a room
+// leads to. Rows say where each link came from, so striking one out is an
+// informed decision rather than a guess.
+const SRC_TEXT = {
+  hand: ['by hand', 'You made this link'],
+  auto: ['found', 'Worked out from the marks on the map'],
+  text: ['from text', 'The module says so, but nothing is marked on the map yet'],
+};
+
+/** A way in plain words: what makes it a way, and the marker behind it. */
+function wayEvidence(way) {
+  if (way.how === 'hand') return { icon: TYPES.room, text: 'you connected these', key: null };
+  if (way.how === 'open') return { icon: TYPES.room, text: 'the outlines run together', key: null };
+  if (way.how === 'text') {
+    const roomId = String(way.via || '').split('::')[0];
+    const f = featuresOf(roomId).find(x => x.id === way.via);
+    return { icon: TYPES[f?.type] || TYPES.note,
+             text: (f ? f.label : way.via) + ' \u2014 in the text, not marked yet', key: null };
+  }
+  const meta = markMeta(way.via);
+  return { icon: TYPES[meta.type] || TYPES.note,
+           text: meta.label + (meta.roomId ? ' \u00b7 ' + meta.roomId + "'s list" : ''),
+           key: ANN.marks[way.via] ? way.via : null };
+}
+
+function srcChip(src) {
+  const [txt, tip] = SRC_TEXT[src] || ['', ''];
+  return txt ? `<span class="src ${src}" title="${esc(tip)}">${esc(txt)}</span>` : '';
+}
+
+/** The one marker the same-as list works on: a placed marker, not a room. */
+function linkSubject() {
+  if (S.sel && ANN.marks[S.sel] && splitKey(S.sel).kind === 'feat') return S.sel;
+  return null;
+}
+
+function renderLinks() {
+  const el = $('#linkPanel');
+  if (!el) return;
+  const subject = linkSubject();
+  let html = '', tally = 0;
+
+  // ---- other placements of the same thing -------------------------------
+  html += '<div class="linkGroup"><h4>Same thing as';
+  if (subject) {
+    const sk = splitKey(subject);
+    const places = placementsOf(sk.id, sk.levelId);
+    html += ` <small>&mdash; ${esc(markMeta(subject).label)}${
+      places.length > 1 ? `, placement <b>#${sk.inst}</b> of ${places.length} on this sheet` : ''}</small>`;
+  }
+  html += '</h4>';
+  if (!subject) {
+    html += '<p class="linkNote">Select a placed marker &mdash; click it on the map, or pick it '
+          + 'from the list above &mdash; to say which other markers are the same door, stair or shaft.</p>';
+  } else {
+    const partners = (LINKS.get(subject)?.same || []).filter(k => ANN.marks[k]);
+    tally += partners.length;
+    for (const k of partners) {
+      const m2 = markMeta(k), sk = splitKey(k);
+      const t = TYPES[m2.type] || TYPES.note;
+      html += `<div class="linkRow">
+        <span class="ico" style="color:${t.color}">${t.ico}</span>
+        <span class="what"><b>${esc(m2.label)}</b><span>${esc(m2.roomId)} &middot; ${
+          esc(LEVELS.get(sk.levelId)?.name || sk.levelId)}${sk.inst > 1 ? ' &middot; #' + sk.inst : ''}</span></span>
+        ${srcChip(linkSource('same', subject, k))}
+        <button class="go" data-gomark="${esc(k)}" title="Show it on its own sheet">show</button>
+        <button class="cut" data-cutsame="${esc(k)}" title="Not the same thing">&times;</button></div>`;
+    }
+    if (!partners.length) html += '<p class="linkNote">Nothing else is marked at this spot.</p>';
+    // the other placements of the same entry, and whether each has a twin yet:
+    // a link belongs to one placement, so five windows want five links
+    {
+      const sk = splitKey(subject);
+      const places = placementsOf(sk.id, sk.levelId).filter(([k]) => k !== subject);
+      if (places.length) {
+        html += '<p class="linkNote placements">Other placements on this sheet: ' + places.map(([k]) => {
+          const n = (LINKS.get(k)?.same || []).length;
+          return `<button class="placeChip${n ? ' tied' : ''}" data-gomark="${esc(k)}" title="${
+            n ? `${n} twin${n === 1 ? '' : 's'}` : 'no twin yet'}">#${splitKey(k).inst}${n ? ' \u21c4' : ''}</button>`;
+        }).join(' ') + '</p>';
+      }
+    }
+    for (const k of struckOut('same', subject)) {
+      const m2 = markMeta(k);
+      html += `<div class="linkRow struck">
+        <span class="ico">&empty;</span>
+        <span class="what"><b>${esc(m2.label)}</b><span>${esc(m2.roomId)} &middot; you said this is not the same thing</span></span>
+        <button class="go" data-undosame="${esc(k)}" title="Put this link back">restore</button></div>`;
+    }
+    const arming = S.picking && S.picking.mode === 'same';
+    html += `<div class="linkAdd">
+      <button id="pickSame" class="${arming ? 'arming' : ''}">${
+        arming ? 'Click a marker\u2026 (Esc cancels)' : '+ Same as another marker\u2026'}</button></div>
+      <p class="linkNote">Switch sheets while picking to tie a stair on one floor to the same stair
+        on the next; the rooms at both ends are then joined too.</p>`;
+  }
+  html += '</div>';
+
+  // ---- what this room leads to ------------------------------------------
+  html += '<div class="linkGroup"><h4>Connects to';
+  if (S.roomId) html += ` <small>&mdash; ${esc(S.roomId)}</small>`;
+  html += '</h4>';
+  if (!S.roomId) {
+    html += '<p class="linkNote">Pick a room on the left to see and edit where it leads.</p>';
+  } else {
+    const ways = waysOf(S.roomId);
+    tally += new Set(ways.map(w => w.to)).size;
+    for (const w of ways) {
+      const r = ROOMS.get(w.to);
+      const ev = wayEvidence(w);
+      html += `<div class="linkRow">
+        <span class="ico" style="color:${ev.icon.color}">${ev.icon.ico}</span>
+        <span class="what"><b>${esc(w.to)}${r ? '. ' + esc(r.name) : ''}</b>
+          <span>${esc(ev.text)}</span></span>
+        ${srcChip(WAY_SOURCE[w.how] || 'auto')}
+        ${ev.key ? `<button class="go" data-gomark="${esc(ev.key)}" title="Show the marker behind this">via</button>` : ''}
+        <button class="go" data-goroom="${esc(w.to)}" title="Go to it">show</button>
+        <button class="cut" data-cutconn="${esc(w.to)}" title="${
+          esc(S.roomId + ' and ' + w.to + ' do not connect: this drops every way between them')
+        }">&times;</button></div>`;
+    }
+    const struck = struckOut('conn', S.roomId);
+    if (!ways.length && !struck.length) {
+      html += '<p class="linkNote">Nothing leads out of here yet.</p>';
+    }
+    for (const id of struck) {
+      const r = ROOMS.get(id);
+      html += `<div class="linkRow struck">
+        <span class="ico">&empty;</span>
+        <span class="what"><b>${esc(id)}${r ? '. ' + esc(r.name) : ''}</b>
+          <span>you said these do not connect</span></span>
+        <button class="go" data-undoconn="${esc(id)}" title="Put this connection back">restore</button></div>`;
+    }
+    const arming = S.picking && S.picking.mode === 'conn';
+    html += `<div class="linkAdd">
+      <button id="addConn">+ Connect to an area\u2026</button>
+      <button id="pickConn" class="${arming ? 'arming' : ''}">${
+        arming ? 'Click a room\u2026 (Esc cancels)' : 'Pick on the map'}</button></div>`;
+  }
+  html += '</div>';
+
+  el.innerHTML = html;
+  $('#linkCount').textContent = tally ? String(tally) : '';
+}
+
+/** Go to a mark wherever it is, changing sheets if that is where it lives. */
+async function showMark(key) {
+  const m = ANN.marks[key];
+  if (!m) return;
+  const sk = splitKey(key);
+  if (sk.levelId && sk.levelId !== S.levelId) await setLevel(sk.levelId);
+  S.sel = key;
+  if (sk.kind === 'room') { S.roomId = sk.id; S.target = { kind: 'room', id: sk.id }; }
+  else { S.roomId = sk.id.split('::')[0]; S.target = { kind: 'feat', id: sk.id }; }
+  renderRooms(); renderFeatures();
+  centerOn(m.shape);
+  needsDraw = true;
+}
+
+function openConnDialog() {
+  if (!S.roomId) { hint('Pick a room first.'); return; }
+  $('#connFrom').textContent = S.roomId;
+  $('#connSearch').value = '';
+  $('#connRooms').innerHTML = DATA.rooms
+    .map(r => `<option value="${esc(r.id)}">${esc(r.name)}</option>`).join('');
+  renderConnHits();
+  $('#connDialog').showModal();
+  $('#connSearch').focus();
+}
+
+function renderConnHits() {
+  const me = S.roomId;
+  if (!me) return;
+  const q = ($('#connSearch').value || '').trim().toLowerCase();
+  const linked = new Set(marksOf('room', me).flatMap(([k]) => LINKS.get(k)?.to || []));
+  const hits = DATA.rooms
+    .filter(r => r.id !== me &&
+      (!q || r.id.toLowerCase().includes(q) || r.name.toLowerCase().includes(q)))
+    .slice(0, 80);
+  $('#connHits').innerHTML = hits.map(r => {
+    const on = linked.has(r.id);
+    return `<button class="hit${on ? ' on' : ''}" data-connto="${esc(r.id)}"${on ? ' disabled' : ''}>
+      <b>${esc(r.id)}</b><span>${esc(r.name)}</span>
+      <em>${on ? 'already connected' : esc(LEVELS.get(r.level)?.name || '')}</em></button>`;
+  }).join('') || '<p class="linkNote">Nothing matches that.</p>';
+}
+
+// ------------------------------------------------------------------ picking
+/** Arm the map: the next click names the other end of a link. */
+function startPick(mode) {
+  if (mode === 'same' && !linkSubject()) {
+    hint('Select a placed marker first, then link it to another one.');
+    return;
+  }
+  if (mode === 'conn' && !S.roomId) { hint('Pick a room first.'); return; }
+  S.picking = { mode, from: mode === 'same' ? linkSubject() : S.roomId };
+  canvas.classList.add('picking');
+  $('#linkSplit').classList.add('open');
+  hint(mode === 'same'
+    ? '<b>Linking.</b> Click the marker that is the same physical thing. You can change '
+      + 'sheets first &mdash; that is how a stair on one floor meets itself on the next. <b>Esc</b> cancels.'
+    : '<b>Connecting.</b> Click any room outline to say it leads to and from '
+      + `<b>${esc(S.roomId)}</b>. <b>Esc</b> cancels.`);
+  renderLinks(); needsDraw = true;
+}
+
+function cancelPick(quiet) {
+  if (!S.picking) return;
+  S.picking = null;
+  canvas.classList.remove('picking');
+  if (!quiet) hint('Cancelled.');
+  renderLinks(); needsDraw = true;
+}
+
+/** A click on the map while armed. Returns true if it was consumed. */
+function pickAt(wp) {
+  const pk = S.picking;
+  if (!pk) return false;
+  const tol = 6 / S.view.scale;
+  const wantRoom = pk.mode === 'conn';
+  const hits = marksOnLevel()
+    .filter(([k, m]) => splitKey(k).kind === (wantRoom ? 'room' : 'feat')
+                     && hitShape(m.shape, wp, tol));
+  // rooms nest, so the smallest outline under the cursor is the one you meant;
+  // among markers a point or a doorway beats the area it sits in
+  const size = m => (isArea(m.shape)
+    ? (bb => (bb.x1 - bb.x0) * (bb.y1 - bb.y0))(areaBBox(m.shape))
+    : 0);
+  hits.sort((a, b) => size(a[1]) - size(b[1]));
+  const hit = hits[0];
+  if (!hit) {
+    hint(wantRoom ? 'No room outline there. Click inside one, or <b>Esc</b> to stop.'
+                  : 'No marker there. Click one, or <b>Esc</b> to stop.');
+    return true;
+  }
+  const [key] = hit;
+  if (wantRoom) {
+    const id = splitKey(key).id;
+    if (id === pk.from) { hint('That is the same room. Pick a different one.'); return true; }
+    setLink('conn', pk.from, id, true);
+    hint(`<b>${esc(pk.from)}</b> now connects to <b>${esc(id)}</b>. `
+       + 'Keep clicking to add more, <b>Esc</b> to stop.');
+    return true;
+  }
+  if (key === pk.from) { hint('That is the marker you started from.'); return true; }
+  if (splitKey(key).id === splitKey(pk.from).id) {
+    hint('That is another placement of the same entry, which is already understood.');
+    return true;
+  }
+  const a = markMeta(pk.from), b = markMeta(key);
+  setLink('same', pk.from, key, true);
+  hint(`<b>${esc(a.label)}</b> and <b>${esc(b.label)}</b> are now the same thing`
+     + (a.type !== b.type ? ` (a ${esc(a.type)} and a ${esc(b.type)}, which is unusual but allowed)` : '')
+     + '. Keep clicking to add more, <b>Esc</b> to stop.');
+  return true;
 }
 
 async function selectRoom(id) {
@@ -1773,6 +2472,8 @@ canvas.addEventListener('pointerdown', e => {
     return;
   }
   if (e.button !== 0) return;
+
+  if (S.picking) { if (pickAt(wp)) return; }
 
   if (S.calibrating) {
     const p = wp;
@@ -2025,15 +2726,23 @@ window.addEventListener('keydown', e => {
     syncGridDialog(); save(); needsDraw = true; return;
   }
 
+  if (e.key.toLowerCase() === 'l' && !e.ctrlKey && !e.metaKey) {
+    S.picking ? cancelPick() : startPick(linkSubject() ? 'same' : 'conn');
+    return;
+  }
   const map = { v: 'select', r: 'rect', c: 'circle', p: 'poly', d: 'seg',
                 t: 'point', e: 'edges', w: 'wallseg' };
   if (map[e.key.toLowerCase()] && !e.ctrlKey && !e.metaKey) { setTool(map[e.key.toLowerCase()]); return; }
-  if (e.key === 'Escape') { S.draft = null; S.calibrating = false; hint(''); needsDraw = true; return; }
+  if (e.key === 'Escape') {
+    if (S.picking) { cancelPick(); return; }
+    S.draft = null; S.calibrating = false; hint(''); needsDraw = true; return;
+  }
   if (e.key === 'Enter' && S.draft && S.draft.type === 'poly') { finishPoly(); return; }
   if (e.key === 'Backspace' && S.draft && S.draft.type === 'poly') { S.draft.pts.pop(); needsDraw = true; return; }
   if ((e.key === 'Delete' || e.key === 'Backspace') && S.sel) {
     e.preventDefault();
     pushHistory('delete ' + markMeta(S.sel).label);
+    forgetLinksFor([S.sel]);
     setMark(S.sel, null);
     return;
   }
@@ -2336,6 +3045,9 @@ async function exportLevel(levelId, scale, wantLos, wantLights, player, sub) {
       height: heightOf(key, m),
       links: rec ? {
         sameAs: rec.same, rooms: rec.rooms, leadsTo: rec.to, alsoOnSheets: rec.levels,
+        reaches: rec.reach && rec.reach.length ? rec.reach : undefined,
+        // on a room outline, every way out with the thing that makes it one
+        ways: rec.ways && rec.ways.length ? rec.ways : undefined,
       } : undefined,
       portal: ci >= 0 ? ci : undefined,
     };
@@ -2376,7 +3088,11 @@ async function exportLevel(levelId, scale, wantLos, wantLights, player, sub) {
     off.height = rows * ppgOut;
     const c = off.getContext('2d');
     c.imageSmoothingQuality = 'high';
-    c.drawImage(src, cx, cy, cwpx, chpx, 0, 0, off.width, off.height);
+    // the crop is in measured-map pixels; a pack sheet at another resolution is
+    // read at its own scale so the same patch of castle comes out
+    const kx = (src.naturalWidth || lv.width) / lv.width;
+    const ky = (src.naturalHeight || lv.height) / lv.height;
+    c.drawImage(src, cx * kx, cy * ky, cwpx * kx, chpx * ky, 0, 0, off.width, off.height);
     image = off.toDataURL('image/png').split(',')[1];
   }
 
@@ -2449,6 +3165,7 @@ function wire() {
   resize();
 
   $('#levelSelect').onchange = e => { setLevel(e.target.value, true); };
+  $('#packSelect').onchange = e => { setPack(e.target.value); };
   $('#playerMap').onchange = e => { S.playerMap = e.target.checked; setLevel(S.levelId); };
   $('#showGrid').onchange = e => { S.showGrid = e.target.checked; needsDraw = true; };
   $('#snapMode').onchange = e => { S.snap = e.target.value; };
@@ -2550,6 +3267,7 @@ function wire() {
       const ci = custom.findIndex(f => f.id === fid);
       if (ci >= 0) custom.splice(ci, 1);
       else if (!ANN.hiddenFeatures.includes(fid)) ANN.hiddenFeatures.push(fid);
+      forgetLinksFor(marksOf('feat', fid).map(([k]) => k));
       marksOf('feat', fid).forEach(([k]) => delete ANN.marks[k]);
       save(); renderFeatures(); renderRooms(); needsDraw = true;
       return;
@@ -2589,6 +3307,63 @@ function wire() {
   };
 
   $('#textToggle').onclick = () => $('.textSplit').classList.toggle('open');
+  // open by default: the links are the part of this you are meant to correct
+  if (localStorage.getItem('cr.links') !== 'shut') $('#linkSplit').classList.add('open');
+  $('#linkToggle').onclick = () => {
+    const open = $('#linkSplit').classList.toggle('open');
+    localStorage.setItem('cr.links', open ? 'open' : 'shut');
+  };
+
+  // ---- links panel ----
+  $('#linkPanel').onclick = e => {
+    const go = e.target.closest('[data-goroom]');
+    if (go) { selectRoom(go.dataset.goroom); return; }
+    const gm = e.target.closest('[data-gomark]');
+    if (gm) { showMark(gm.dataset.gomark); return; }
+    const cs = e.target.closest('[data-cutsame]');
+    if (cs) {
+      const subject = linkSubject();
+      if (subject) setLink('same', subject, cs.dataset.cutsame, false);
+      return;
+    }
+    const cc = e.target.closest('[data-cutconn]');
+    if (cc) { if (S.roomId) setLink('conn', S.roomId, cc.dataset.cutconn, false); return; }
+    const us = e.target.closest('[data-undosame]');
+    if (us) {
+      const subject = linkSubject();
+      if (subject) restoreLink('same', subject, us.dataset.undosame);
+      return;
+    }
+    const uc = e.target.closest('[data-undoconn]');
+    if (uc) { if (S.roomId) restoreLink('conn', S.roomId, uc.dataset.undoconn); return; }
+    if (e.target.closest('#pickSame')) {
+      S.picking && S.picking.mode === 'same' ? cancelPick(true) : startPick('same');
+      return;
+    }
+    if (e.target.closest('#pickConn')) {
+      S.picking && S.picking.mode === 'conn' ? cancelPick(true) : startPick('conn');
+      return;
+    }
+    if (e.target.closest('#addConn')) openConnDialog();
+  };
+
+  // ---- connect-to-an-area dialog ----
+  $('#connSearch').oninput = () => renderConnHits();
+  $('#connSearch').onkeydown = e => {
+    e.stopPropagation();
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const first = $('#connHits').querySelector('.hit:not(.on)');
+    if (first) first.click();
+  };
+  $('#connHits').onclick = e => {
+    const b = e.target.closest('[data-connto]');
+    if (!b || !S.roomId) return;
+    setLink('conn', S.roomId, b.dataset.connto, true);
+    renderConnHits();
+  };
+  $('#connCancel').onclick = () => $('#connDialog').close();
+  $('#connPick').onclick = () => { $('#connDialog').close(); startPick('conn'); };
 
   // add-feature dialog
   $('#addFeatureBtn').onclick = () => {

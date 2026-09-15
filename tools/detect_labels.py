@@ -13,6 +13,11 @@ import pytesseract
 
 Image.MAX_IMAGE_PIXELS = None
 IMG = "/mnt/user-data/uploads/Ravenloft/References/img"
+# castle-data.json names each sheet by its full path from the Ravenloft
+# folder, which is now map_packs/<pack>/..., so resolve it against the root
+# rather than joining a bare file name onto IMG.
+ROOT = os.path.dirname(os.path.dirname(IMG))
+sheet = lambda rel: os.path.join(ROOT, *rel.split("/"))
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA = json.load(open(os.path.join(HERE, "castle-data.json")))
 
@@ -57,8 +62,8 @@ def _lev(a, b):
 
 
 def detect(level):
-    dm_p = os.path.join(IMG, os.path.basename(level["dmMap"]))
-    pl_p = os.path.join(IMG, os.path.basename(level["playerMap"]))
+    dm_p = sheet(level["dmMap"])
+    pl_p = sheet(level["playerMap"])
     dm = np.asarray(Image.open(dm_p).convert("RGB"), dtype=np.int16)
     pl = np.asarray(Image.open(pl_p).convert("RGB"), dtype=np.int16)
     if dm.shape != pl.shape:
