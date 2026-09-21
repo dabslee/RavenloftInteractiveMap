@@ -1,9 +1,9 @@
 # Castle Ravenloft VTT Mapper
 
 A local tool for marking up the official Castle Ravenloft battlemaps: where each
-area from chapter 4 of *Curse of Strahd* sits, where its doors are, and where the
-items and features the text calls out go. Everything you mark is written to a JSON
-file in this folder as you work, and can be exported as Universal VTT.
+area from chapter 4 of *Curse of Strahd* sits, what stands in it, and how you get
+from it to the next one. Everything you mark is written to a JSON file in this
+folder as you work, and can be exported as Universal VTT.
 
 ## Running it
 
@@ -30,40 +30,86 @@ Nothing is uploaded and nothing is installed: Python standard library only.
 | `serve.py` | the local server |
 | `index.html`, `app.js`, `app.css` | the editor |
 | `browse.html`, `browse.js`, `browse.css` | the read-only reader at `/browse` |
-| `castle-data.json` | 150 areas with their module text and 498 extracted features |
-| `castle-ravenloft-annotations.json` | your work: created on first edit, rewritten on every change |
-| `backups/` | a rolling copy of the annotations file, one per minute of editing, last 40 kept |
+| `markers.js` | the data model, read by the editor and the reader both |
+| `SCHEMA.md` | what a marker is and why, and the rules the code follows |
+| `castle-data.json` | the 150 areas and their module text |
+| `castle-ravenloft-annotations-v2.json` | your work: rewritten on every change |
+| `migrate.py` | built the file above out of the old one; also validates it |
+| `tools/smoke-*.js` | the checks each of those runs |
+| `migration-review.md` | what the migration had to guess, and what it could not decide |
+| `backups/` | a rolling copy of the annotations, one per minute of editing, last 40 kept |
 | `exports/` | Universal VTT output |
-| `extract.py` | regenerates `castle-data.json` from `References/Curse of Strahd.md` |
-| `curation.py` | the room-by-room corrections applied on top of the text extraction |
-| `tools/` | the scripts that traced the first-pass outlines, classified open edges, and seeded heights |
+| `tools/smoke.js` | runs the editor and the reader headlessly and checks them |
+| `extract.py`, `curation.py` | how `castle-data.json` was built; history now |
+| `tools/*.py` | the scripts that traced the first-pass outlines and seeded heights |
 
 The battlemaps themselves live outside this folder, in
 `References/img/map_packs/`, one folder per set. See [Map packs](#map-packs).
 
+`castle-ravenloft-annotations.json`, without the `-v2`, is the old file this one
+was made from. Nothing reads it any more. It is left on disk because it is the
+only copy of the work as it stood before the migration; delete it once you are
+happy.
+
+## Two kinds of marker
+
+Everything you draw is a **marker**, and there are two sorts.
+
+An **object** is a thing in a place. It belongs to exactly one room, and it is a
+room outline, a creature, an item, a trap, or a note. A room's own footprint is
+simply an object of type *area* — a room drawn on four sheets has four of them.
+
+A **portal** is a way through. It is not in a room: it **names the two places it
+joins**, and it carries a name and a description *for each side*, because the
+book describes a doorway twice and the two descriptions are not the same. From
+K1 the main doors are "torch flames fluttering on each side of the keep's open
+main doors"; from K7 they are the way back out into the rain.
+
+That is the whole of the model, and it is what makes the rest simple. Because a
+portal says what it joins, nothing has to work out what connects to what: a
+room's ways in and out are a lookup, not a guess. The previous build had to pair
+up doors by how close together they were drawn, let you correct the pairing, and
+then work around the corrections everywhere — all of which is gone.
+
+Every marker also carries:
+
+- **shapes** — as many as it needs. Six torches are *one* object drawn six
+  times, not six records. A marker with no shapes yet is a thing the book
+  mentions that you have not placed; it sits in the list, greyed.
+- **height** — feet above the main floor, which is 0. Blank means the floor of
+  whichever sheet it is drawn on.
+- **light** — feet of bright light and feet of dim light, if it shines.
+
+A portal adds what sort of way it is:
+
+| | |
+|---|---|
+| **open** | cannot be shut: an archway, a stair, a boundary where two areas run together |
+| **door** | opens and shuts, and may be lockable |
+| **barrier** | never opens: a window, an arrow slit, a grate |
+
+plus **see-through** (does sight pass while it is shut — a portcullis yes, an
+oak door no), **secret**, and the state it stands in at the table.
+
 ## What is in the data
 
-150 areas: K1-K88, the eight cells each in K74 and K75, and all 40 catacomb crypts,
-each with its full module text, and 463 features sorted into the vocabulary the printed
-map key uses: door, secret door, stairs, trap, window, light, item, plus creature, wall
-and note.
+150 areas: K1–K88, the eight cells each in K74 and K75, and all 40 catacomb
+crypts, each with its full module text.
 
-The features started as a pattern-matching pass over the text, which produced plenty of
-duplicates and mistakes. Every room has since been read individually and corrected in
-`curation.py`, which records, per room, what was dropped and why, what was renamed to
-what the module actually calls it, what was re-typed, and what the pattern matching
-missed. Three kinds of error came up again and again:
+The things in them started as a pattern-matching pass over that text, which
+produced plenty of duplicates and mistakes. Every room was then read
+individually and corrected in `curation.py`, which recorded what was dropped and
+why, what was renamed to what the module actually calls it, and what the pattern
+matching missed. Three kinds of error came up again and again: the same object
+described several times (K30's four chests were five entries), things that live
+in another room (K10 "heard the portcullis clang shut" and got a portcullis,
+which is at the gatehouse), and miscategorised ones (K59's "jack-o'-lantern" is
+Pidlwick II's painted face, not a lamp).
 
-- **The same object described several times.** K30's four chests were five entries;
-  K85's coffin was three; K86's three alcoves were five.
-- **Things that live in another room.** K10 "heard the portcullis clang shut" and got a
-  portcullis, which is at the gatehouse. K11 got the organ, which stands in K10.
-- **Miscategorised.** K59's "jack-o'-lantern" is Pidlwick II's painted face, not a lamp.
-  Crypt 34's "pit" is a pit fiend. K65's "fire pit" is a hearth, not a hazard.
-
-`curation.py` is keyed on the feature ids, which never change, so markers you have
-already placed stay attached to what you placed them on. Only K13 has no features, and
-it describes nothing to place.
+All 416 of those survived into markers, and every one of them is placed. Each
+carries a `seed` naming the entry it came from, so you can still trace a marker
+back to the line of the book that produced it. `extract.py` and `curation.py`
+are no longer part of the loop — the markers are the data now.
 
 The seven map sheets:
 
@@ -77,39 +123,41 @@ The seven map sheets:
 | Larders of Ill Omen | map-4.08-larders | 3000 × 2175 | 122.71 |
 | Dungeon and Catacombs | map-4.09-dungeons-and-catacombs | 3000 × 2929 | 94.87 |
 
-Map sheet 6 carries book maps 6 through 10, so every spires room is on it. There is
-no separate sheet to switch to.
+Map sheet 6 carries book maps 6 through 10, so every spires room is on it. There
+is no separate sheet to switch to.
 
 ## Using it
 
-Pick an area in the left column. Its doors and items fill the middle column, and the
-module text sits underneath, collapsed. Drag a box over the room on the map to record
-its area, then click each door or item in turn and place it. Nothing moves on its own:
-after a placement the thing you just drew stays selected, the view stays put, and the
-tool you picked stays active. Clicking the next entry in the list sets the right tool
-for its type. Since the tool stays live, a left-drag on the map redraws the selected
-marker rather than panning: pan with space-drag, right-drag or the middle button, and
-Ctrl+Z undoes a redraw you did not mean.
+Pick an area in the left column. The middle column fills with **what is in it**
+and **the ways in and out**, and the module text sits underneath, collapsed.
+Click a row to select that marker; the right-hand panel then edits it.
 
-The middle column is editable: `+ Add` creates a marker the extraction missed, the `×` on
-any row drops one you do not want, and the pencil (or a second click on the name)
-renames one in place. Renames are kept in the annotations file under your own name for
-the entry, so regenerating `castle-data.json` never overwrites them.
+**One floor at a time.** The middle column shows what is on the sheet you are
+looking at, not everything the room has anywhere. K20 is drawn on four sheets
+and its staircase climbs past all of them; listing the lot at once would say the
+tower roof is next door to the main floor. So on the main floor K20 shows the
+stair going *up 50 feet*, on the Court it shows that same stair going back
+*down* and the next flight going *up 40*, and on the Spires only the flight
+down. **Also on**, under the room name, is how you move between them.
 
-**One entry, as many placements as it needs.** "Fluttering torches" is rarely one
-torch and the text almost never says how many, so every entry holds any number of
-placements. Pick it once and keep drawing: each click or drag adds another. The same
-goes for doors, stairs, traps, windows and the rest, so a hall with openings at both
-ends is one "Double doors" entry placed twice. The row shows the tally next to its dot
-(`●6`), and the entry counts as done once at least one is down, so the room's n/m
-total still reads as a checklist. Click any single placement with the Select tool to
-move or delete just that one; removing the row with `×` clears them all.
+Nothing moves on its own: after a stroke the thing you just drew stays
+selected, the view stays put, and the tool you picked stays active. Since the
+tool stays live, a left-drag on the map redraws rather than pans — pan with
+space-drag, right-drag or the middle button, and Ctrl+Z undoes a stroke you did
+not mean.
 
-**Rooms on more than one sheet.** K18, K20, K21 and the shafts are drawn on several
-floors, so a mark belongs to a room *and* a map. Mark K18 on the main floor, switch to
-the dungeon sheet, press **Mark room area** again, and both are kept. The **Also on**
-chips under the room name show where else it appears and where you have already
-marked it, and jump you there.
+**Mark room area** draws the room's outline on the sheet showing, making one if
+it is not there yet. **+ Add** creates anything else: an item, a creature, a
+trap, a note, or a way through. The **×** on a row deletes that marker outright;
+**Delete** with a shape selected removes just that one drawing of it and leaves
+the marker.
+
+**One marker, as many drawings as it needs.** "Fluttering torches" is rarely one
+torch and the text almost never says how many, so pick the marker once and keep
+drawing: each click or drag adds another. The row shows the tally (`●6`). The
+same goes for doors, stairs, traps and windows, so a hall with openings at both
+ends can be one entry placed twice — or two portals, if the two openings lead
+somewhere different, which is usually what you want.
 
 **Tools**
 
@@ -123,16 +171,19 @@ marked it, and jump you there.
 | T | point |
 | W | wall: drag to lay a wall inside a room |
 | E | edges: click an outline edge to switch it between wall and open |
-| L | link: tie the selected marker to another, or the room to another area |
-| 1 / 2 / 3 | new area · add to it · subtract from it |
+| 1 / 2 / 3 | new drawing · add to it · subtract from it |
 | F | fit the map to the window |
 | G | toggle the grid |
-| Delete | remove the selected marker |
+| Delete | remove the selected drawing |
 | Alt (hold) | snap off while held, back to your setting when you let go |
 | Ctrl+Z | undo |
 | Ctrl+Shift+Z or Ctrl+Y | redo |
 
-Wheel zooms, space-drag or right-drag pans, Esc cancels whatever you are drawing.
+Wheel zooms, space-drag or right-drag pans, Esc cancels whatever you are doing.
+
+Every change — drawing, renaming, retyping, setting a portal's far end — is one
+undo step and saves itself a moment later. The badge in the toolbar says whether
+it has.
 
 ## Room outlines: walls, open boundaries, and subtraction
 
@@ -171,16 +222,16 @@ butted together become one; a cut that splits a room in half becomes two outline
 hole punched in the middle stays a hole. Wall and open edges are carried through the
 merge, and a vertex is kept wherever a wall meets an open stretch.
 
-**Markers have areas too.** A rectangle, circle or polygon drawn for a marker rather
-than a room works the same way: a staircase, a pit, a pool of water or a heap of rubble
+**Anything can be an area.** A rectangle, circle or polygon drawn for something other
+than a room outline works the same way: a staircase, a pit, a pool of water or a heap of rubble
 is an area you can add to and cut out of, with the same handles and the same merge into
-one clean outline. The difference is the default. A room's edges start as walls; a
-marker's start as **open**, since saying where a staircase sits should not by itself
-block sight. Switch any of them with the Walls tool if you do want a marker to block.
+one clean outline. The difference is the default. A room outline's edges start as
+walls; everything else starts **open**, since saying where a staircase sits should not
+by itself block sight. Switch any of them with the Walls tool if you do want a marker to block.
 
-With **New** selected, each stroke starts another placement of that marker, which is
+With **New** selected, each stroke starts another drawing of that marker, which is
 how one entry covers six torches. With **+** or **−** — or Ctrl held down — the stroke
-reshapes the placement you have selected instead, so you can cut a bite out of one
+reshapes the drawing you have selected instead, so you can cut a bite out of one
 staircase without starting a second.
 
 **Which edges are open already.** Every outline was compared against the sheet it sits
@@ -196,133 +247,136 @@ export punches the hole (see below).
 **Walls inside a room.** The outline handles the shell; for everything within it —
 partitions, railings, the backs of fireplaces, the columns down the middle of a hall —
 press **W** and drag. Each drag lays one wall, the tool stays live so you can keep
-going, and Shift keeps a run straight. They belong to whichever room is selected and
-are counted in the room panel ("3 inside"), but they stay out of the doors-and-items
-checklist so they never affect its tally.
+going, and Shift keeps a run straight. A wall goes onto the room's own outline, which
+is what a wall belongs to, so it needs no marker of its own and never shows up in the
+room's list as a thing to place.
 
 Walls that meet are joined into one polyline on export, so drawing a corner as two
 drags gives a single continuous wall. Click one with the Select tool to pick it up,
 drag its ends to adjust, Delete to remove it. Everything is undoable.
 
-There is also a **Wall** entry under **+ Add** if you want a named one that appears in
-the checklist.
 
-## What is tied to what
+## Ways between rooms
 
-Doors get marked twice: once on each room's checklist, because the module describes the
-same doorway from both sides. Rather than make you deduplicate by hand, the interface
-works out the connections itself and keeps them current as you draw.
+A portal has two ends and you say what they are. There is nothing to derive and
+nothing to correct.
 
-- **⇄ next to an entry** means another room's checklist has a marker at the same spot,
-  so the two entries are the same physical thing.
-- **The room chips** next to an entry are the rooms it touches on the map, plus any room
-  its own label names ("south to K9", "up to K47"). Click one to jump there.
-- **Leads to** in the room header lists everywhere that room's doors and stairs go.
-- Marks also record the other sheets the same entry appears on, which is how K18, K20
-  and K21 keep track of themselves across four maps.
+Select a portal and the right-hand panel shows both its ends. Each is either an
+area you have named or **not said yet**, and each carries its own name and
+description — what the way is called from that side, and how it looks to
+somebody standing there.
 
-All of it is derived from the marks and the module text, so there is nothing to maintain
-in the ordinary case: move a door and the links follow. Each mark carries its own copy in
-the annotations file under `links`, and the export writes them into the notes file as
-`sameAs`, `rooms`, `leadsTo` and `alsoOnSheets`.
+**Setting an end.** Press **set** (or **change**) beside it and the map arms.
+Hover, and the thing you would take is picked out in white with its name beside
+the cursor; click to take it. You can change sheets first, and for anything
+vertical you must: the top of a stair is on another sheet than its foot, and
+clicking up there is what joins the two floors. Esc stands it down.
 
-### One place it is worked out
+Things sit on top of one another — a lamp inside a hall, a gate mechanism
+inside a courtyard — so the picker offers **everything under the cursor**,
+smallest first, and **Tab** steps through the stack. The rest of the stack is
+outlined faintly while you choose, and the label says which one of how many you
+are on. Any object can be an end, not only a room outline: a place the book
+never gave a room of its own, like the inside of a gate tower, is often marked
+as something else, and a door has to be able to lead there. The object already
+on the portal's *other* side is held back, and the picker says so rather than
+appearing to find nothing.
 
-Connections are derived **once**, by the editor, and written onto every room outline as
-`links.ways`. The Connects-to panel here and the reader's "ways in and out" both render
-that list and neither works anything out for itself, so the two cannot disagree. Each way
-records what makes it a way:
+**An end may honestly be nothing.** The outer gate opens onto the road; the
+arrow slits look out over the valley. Leave that side unset and the row reads
+"far side not said" — which is also what an unfinished one looks like, so the
+room list counts them: `12/14 ·2?` means two ways still want an end.
 
-| `how` | `via` | what it means |
-|---|---|---|
-| `marker` | a mark key | a door, stair or archway drawn on the map |
-| `open` | a room mark key | two outlines that run together along an open edge |
-| `text` | a feature id | the module describes it, but nothing is marked yet |
-| `hand` | `null` | you connected them in the editor |
+**A vertical passage is one portal per flight**, not one portal through the
+whole castle. K20's spiral staircase is three: main to Court, Court to Weeping,
+Weeping to Spires. That is what lets a room's list mean *where you can get to
+from here in one move* rather than *everywhere this stair eventually reaches*.
+Both ends of a flight naming the same room is normal — it is the same room on
+two sheets — and the per-side names are what keep it readable.
 
-A passage joins the room whose checklist it is on to each other end it reaches: the rooms
-its outline meets, and the rooms its own label names. That room is the hub. Two rooms that
-merely both touch one marker are **not** thereby joined to each other, which is what used
-to invent a staircase between a bedchamber and a hall two floors above it when the stair's
-outline overlapped the bedchamber by a few pixels.
+**The rise is measured, not guessed.** Each end knows the floor it stands on, so
+a row says "up 50 ft" because that is the difference between the two. The
+previous build read direction words out of the label and got the awkward ones
+wrong.
 
-Two entries you have tied together as the same thing count as one way, not two, and the
-row you see is the one on the room's own checklist. This is judged entry against entry,
-not placement against placement: a row stands for a whole entry however many times it is
-placed, so it is enough that any placement of the one is a twin of any placement of the
-other. A marker placed several times is still one way. And where the map already accounts
-for a room, the book's guess is dropped rather than listed twice.
+## The reader
 
-Two entries that reach the same room but have **not** been tied together stay as two rows.
-That is deliberate: sometimes they really are two passages (K47 has two doors to K48), and
-sometimes they are the two sides of one passage nobody has tied yet. The second row is the
-tool telling you which pair still wants a link.
+`http://localhost:8731/browse`, or the **Reader** button in the editor's
+toolbar. Same server, same file, no way to change anything: the page only ever
+issues a GET, and it re-reads the file every few seconds, so anything you mark
+in the editor shows up here without a refresh.
 
-The chips beside a marker come from the same one place: `links.reach`, the rooms that
-marker reaches, which the editor works out and both views read. A pair you have struck out
-is left out of it, so saying two rooms do not connect clears the chips and the reader's
-badges as well as the connection rows, rather than leaving a marker still advertising it.
+Three columns. On the left, the same room library the editor uses, grouped by
+floor with each floor headed by its height. In the middle, the room: its name,
+the floor and height, then the module's own text including any pictures printed
+with it, then **also drawn on**, then **in this area**, then **ways in and
+out**. On the right, the map, opened to the room you picked, with everything
+outside it under a dark wash and everything inside carrying a badge. Hover a
+badge for the name, the description, the height, and where it leads.
 
-Because the reader only reads, an annotations file written before this existed has no
-`ways` on it and the reader will say so in its breadcrumb rather than show every room as a
-dead end: open the editor once and let it save.
+The middle column is scoped to the sheet you are on, exactly as the editor is
+and for the same reason. Both pages get that from `markers.js`, so they cannot
+disagree.
 
-One thing worth knowing about `rooms`, which feeds all of the above: a marker drawn as a
-point is credited to every outline within half a grid square &mdash; five feet &mdash; of
-it. That is deliberate, because a door sits *in* a wall and belongs to the rooms on both
-sides of it, and without reaching across it would belong to neither. The cost is that any
-point marker within five feet of a party wall also picks up the room on the other side. If
-that gives you a link you do not want, nudge the marker a little further in, or strike the
-pair out.
+Moving between rooms on the same sheet glides the camera across rather than
+cutting, so you keep your bearings; a room on another sheet cuts, because the
+picture changes.
 
-### Correcting them by hand
+The reader has the same **Maps** picker as the editor and remembers your choice
+alongside it: both pages read `cr.pack` out of the browser's local storage.
+Middle-drag (or right-drag, or space-drag) always pans, whatever is under the
+cursor, and clicking the room you are already reading does nothing rather than
+following one of its doors.
 
-Proximity cannot see everything. Two flights of stairs that are the same flight never
-touch, because they are drawn on different sheets. A passage the book only describes in
-prose has nothing on the map to derive from at all. And now and then two doors that are
-genuinely two doors get paired because they sit a few pixels apart. So every link can be
-made and broken by hand, in the **Links** panel under the feature list.
+Pictures come from `References/img`. The module's own illustrations are not part
+of the map files, so where a file is missing the reader shows the caption and
+says so; drop the image into that folder under the name the text uses and it
+appears.
 
-The panel has two halves. **Same thing as** works on the marker selected right now, and
-lists every other placement the app considers the same physical thing. **Connects to**
-works on the room selected right now, and lists everywhere it leads.
+**Also drawn on** lists the other sheets the same room appears on, each with the
+climb from where you are now and the floor it sits at. Click one to follow the
+room onto that sheet.
 
-- **+ Same as another marker…** arms the map. Click the marker that is the same thing and
-  the two are tied together. You can change sheets before clicking, which is the whole
-  point: that is how the stair on the main floor meets itself on the floor above.
-- A link belongs to **one placement**, not to the checklist entry. Five windows placed
-  from one entry are five markers, and each wants its own twin; tying all five of the
-  far side's windows to one of yours makes that one window reach the far room and leaves
-  the other four with nothing. While an entry with several placements is selected the map
-  numbers them, filled in for the ones that already have a twin, and the panel says which
-  placement you are linking and lists the others with their status.
-- **+ Connect to an area…** opens a searchable list of all 150 areas. **Pick on the map**
-  arms the map instead, and the next room outline you click is connected.
-- **×** on any row breaks that link, both ways and from both ends. If it was one the app
-  worked out for itself, breaking it is remembered as a refusal, so a later redraw does not
-  put it back. On a connection it drops *every* way between the two rooms, not just that
-  row's evidence.
-- A pair you have struck out stays listed, greyed and crossed through, with **restore** to
-  take the strike-out back. If the app can still work the link out for itself it comes back
-  as its own; if it cannot, it comes back as yours.
-- Each connection row names the thing that makes it a connection, and **via** jumps to that
-  marker. If a connection looks wrong, that tells you which marker to go and look at.
-- **L** arms the picker from the keyboard, **Esc** stands it down.
+**Ways in and out** says how each way is made rather than just that one exists —
+a door, a secret door, a spiral stair, a trapdoor, a ladder, a portcullis, an
+archway, or an open boundary where two areas simply run together — and whether
+it stands open, shut or locked. Each row says where it comes out, the sheet at
+the far end when that differs, and the rise in feet. Click a row, or the thing
+itself on the map, and you are there.
 
-Every row says where its link came from: **by hand** if you made it, **found** if the app
-worked it out, **from text** if the module says so but nothing is marked yet. Linking
-stairs across sheets is worth doing because calling two markers the same thing joins the
-rooms at both their ends, so a stair linked between two floors connects the room below to
-the room above without any further work.
+**The castle, floor by floor**, on the right, stacks every sheet as an isometric
+silhouette at its own height, against a scale in feet. The slab you are on is lit, the
+room you are reading is picked out in gold on it, and clicking a slab takes you to that
+sheet. The sheets line themselves up through the rooms they share: K18, K20, K21 and the
+shafts are marked on several, so the offset between any two sheets is the difference
+between the same room's position on each, and where a room is drawn more than once on a
+sheet the alignment that makes the two silhouettes overlap best is the one taken. The
+walls sheet shares no room with the keep, so it is placed by its front courtyard, which
+abuts the keep's front wall.
 
-While a marker or room is selected the map draws thin dashed threads to whatever it is
-tied to on the sheet showing, so a link is something you can see and not just a claim in
-a list.
+The spires sheet carries the roof and four tower drawings printed off to one side, so
+each drawing is found as its own cluster, given the height of the rooms the book
+measures in it, and moved over the tower it belongs to: by a room it shares with the
+floors below where there is one (the shafts, the heart tower), and otherwise by
+whatever it connects to. The towers therefore stack up the castle rather than lying
+beside it: the roof at 130, the witches' rooms at 160, the tower roof and bridge at 190,
+the north tower at 250 and 260, and the high tower peak at 340.
 
-Your corrections live in the annotations file under `linkEdits`, as four lists of pairs:
-`same` and `conn` for the links you made, `notSame` and `notConn` for the ones you
-refused. They ride the undo stack with everything else, and deleting a marker takes its
-links with it.
+The scale on the left is true to the foot, but the gaps between the drawings are not:
+each layer is placed far enough above the one below to be seen whole, and any spare room
+is then handed out in proportion to the real climb, so the stack still hints at the
+distances. A dashed leader joins each mark on the scale to the layer it belongs to. The
+whole thing stretches to the height the panel has and shrinks to fit when there is less.
+Changing floor always cuts rather than gliding; moving between rooms on one floor still
+glides. **Vertical minimap** in the toolbar, or **S**, hides and shows the panel.
+
+Every pane can be dragged wider by the handle between it and its neighbour, in the
+reader and in the editor both; double-click a handle to put it back. The widths are
+remembered per browser.
+
+Press **F** to fit the room, **A** for the whole floor, **/** to jump to the search box.
+Drag to pan, wheel to zoom, and the URL carries the room, so a link to
+`/browse?room=K59` opens on the High Tower Peak.
 
 ## Map packs
 
@@ -437,119 +491,89 @@ suspend snapping for as long as you hold it: the dropdown greys out while it is 
 your setting comes straight back when you let go, which is the quick way to put one
 marker exactly where it sits on the art rather than on the nearest line.
 
-## The reader
-
-`http://localhost:8731/browse`, or the **Reader** button in the editor's toolbar. Same
-server, same annotations file, no way to change anything: the page only ever issues a
-GET, and it re-reads the file every few seconds, so anything you mark in the editor
-shows up here without a refresh.
-
-Three columns. On the left, the same condensed room library the editor uses, grouped by
-floor with each floor headed by its height, minus the editing progress marks. In the
-middle, the room itself: its name, the floor it is on and its height, then the module's
-own text for the room including any pictures printed with it, then **also drawn on**,
-then **ways in and out**. On the right, the map, opened to the room you picked, with
-everything outside the room under a dark wash and every marked thing inside it carrying a
-badge. Hover a badge and you get the marker's label, its type, the module's note about
-it, its height, and where it leads.
-
-Moving between rooms on the same sheet glides the camera across rather than cutting, so
-you keep your bearings; a room on another sheet cuts, because the picture changes.
-
-The reader has the same **Maps** picker as the editor, and remembers your choice
-alongside it: both pages read `cr.pack` out of the browser's local storage.
-Middle-drag (or right-drag, or space-drag) always pans, whatever is under the cursor,
-and clicking the room you are already reading does nothing rather than following one of
-its doors.
-
-Pictures come from `References/img`. The module's own illustrations are not part of the
-map files, so where a file is missing the reader shows the caption and says so; drop the
-image into that folder under the name the text uses and it appears.
-
-Also drawn on lists the other sheets the same room appears on, each with the climb from
-where you are now (up 240 ft, down 80 ft) and the floor it sits at. Click one to follow
-the room onto that sheet.
-
-Ways in and out renders the `links.ways` the editor wrote and derives nothing of its own,
-so it shows exactly what the editor's Connects-to panel shows, corrections included.
-It says how each connection is made rather than just that one exists: a door, a secret door, a
-spiral stair, a trapdoor, a ladder, a chute, a portcullis, an archway, a teleport, or an
-open boundary where two areas simply run together. Each row also says where it comes
-out: the floor at the far end when it is a different sheet, and for anything with a rise,
-whether it goes up or down and by how many feet, measured from the room as drawn on the
-sheet you are looking at. The book's own wording wins over the measurement when the two
-disagree, and where one label covers two directions ("up to K30 and down to K61") each
-row takes the direction word nearest its own destination. and a rise the sheets cannot measure shows as a plain
-"up" or "down". Click a row and you are in that room.
-Click a door or a stair on the map and you go the same way. Rows the module describes but
-nothing has been marked for yet are listed too, greyed, so the list is as complete as the
-book rather than as complete as the marking.
-
-**The castle, floor by floor**, on the right, stacks every sheet as an isometric
-silhouette at its own height, against a scale in feet. The slab you are on is lit, the
-room you are reading is picked out in gold on it, and clicking a slab takes you to that
-sheet. The sheets line themselves up through the rooms they share: K18, K20, K21 and the
-shafts are marked on several, so the offset between any two sheets is the difference
-between the same room's position on each, and where a room is drawn more than once on a
-sheet the alignment that makes the two silhouettes overlap best is the one taken. The
-walls sheet shares no room with the keep, so it is placed by its front courtyard, which
-abuts the keep's front wall.
-
-The spires sheet carries the roof and four tower drawings printed off to one side, so
-each drawing is found as its own cluster, given the height of the rooms the book
-measures in it, and moved over the tower it belongs to: by a room it shares with the
-floors below where there is one (the shafts, the heart tower), and otherwise by
-whatever it connects to. The towers therefore stack up the castle rather than lying
-beside it: the roof at 130, the witches' rooms at 160, the tower roof and bridge at 190,
-the north tower at 250 and 260, and the high tower peak at 340.
-
-The scale on the left is true to the foot, but the gaps between the drawings are not:
-each layer is placed far enough above the one below to be seen whole, and any spare room
-is then handed out in proportion to the real climb, so the stack still hints at the
-distances. A dashed leader joins each mark on the scale to the layer it belongs to. The
-whole thing stretches to the height the panel has and shrinks to fit when there is less.
-Changing floor always cuts rather than gliding; moving between rooms on one floor still
-glides. **Vertical minimap** in the toolbar, or **S**, hides and shows the panel.
-
-Every pane can be dragged wider by the handle between it and its neighbour, in the
-reader and in the editor both; double-click a handle to put it back. The widths are
-remembered per browser.
-
-Press **F** to fit the room, **A** for the whole floor, **/** to jump to the search box.
-Drag to pan, wheel to zoom, and the URL carries the room, so a link to
-`/browse?room=K59` opens on the High Tower Peak.
-
 ## Export
 
-**Export VTT** writes one `.dd2vtt` per level into `exports/`, plus a `-notes.json`
-listing every marker with its room, label, and grid coordinates.
+**Export VTT** writes one `.dd2vtt` per level into `exports/`, plus a
+`-notes.json` carrying everything the format has nowhere to put.
 
-- Door, secret door, and window markers become portals, **one portal per real opening**:
-  a door marked from both rooms is exported once, and the notes file records which marks
-  it came from. Two markers of different kinds drawn on the very same line (a door on one
-  list, an archway on the other) also count as one.
-- **Walls give way where a portal sits.** A door drawn on top of a wall leaves a real gap
-  in the line of sight rather than a door stuck behind a solid wall, so the opening works
-  the moment the map is imported.
-- A door, window or arrow slit marked as a **point** rather than a line is fitted to the
-  wall it sits against: it becomes a narrow portal lying along that wall, 2.5 feet for a
-  window or slit and 5 feet for a door, with the matching gap cut out of the wall.
-- A portal starts **open** when the text says there is nothing in the opening (an archway,
-  a doorway with the door gone) and closed otherwise; windows are see-through either way.
-- Room outlines contribute their **wall** edges as line-of-sight; edges you marked open
-  are left out. Adjacent wall edges are chained into one polyline rather than exported
-  one segment at a time.
-- Standalone **Wall** markers become line-of-sight too.
-- Light markers become lights.
-- Every marker in the notes file carries its **height** and its **links**, corrections
-  included, and the file also lists the portals with the marks behind each one.
-- The image comes from whichever map pack is showing, so you can export the same castle
-  twice with two different sets of art and the geometry will be identical.
-- The image is cropped to whole grid squares so the exported grid starts at 0,0 and
-  needs no nudging in Foundry, Arkenforge, or Fantasy Grounds.
-- The grid dropdown defaults to splitting each drawn 10-foot square into 5-foot cells,
-  which is what most VTTs expect. Switch it to 10-foot cells to keep the squares as
-  they are printed.
+Portals come straight off the model. Each one says what it is, so there are four
+rules and no guesswork:
 
-Full resolution is the honest choice for a final map; quarter resolution is much faster
-while you are testing the import.
+| | in the wall | in the VTT |
+|---|---|---|
+| **open** | cut away | nothing — it is a hole, not a door |
+| **door** | cut | a door, shut unless it stands open |
+| **barrier**, see-through | cut | a portal that never blocks sight |
+| **barrier**, solid | left whole | nothing |
+
+Only a portal drawn as a **line or a point** is an opening. One drawn as an area
+is a footprint — a staircase, the mouth of a shaft — and cutting every wall it
+overlapped would open the rooms it merely passes through.
+
+- A door or slit marked as a **point** is fitted to the wall it sits against: it
+  becomes a narrow portal lying along that wall, 5 feet for a door and 2.5 for a
+  slit, with the matching gap cut out.
+- Room outlines contribute their **wall** edges as line-of-sight; edges you
+  marked open are left out. Adjacent wall edges are chained into one polyline.
+  Walls drawn inside a room go in too.
+- Anything with a **light** and a point drawn for it becomes a light: dim is the
+  reach, bright sets how hard it burns.
+- The notes file lists every marker with its height, every room with its floor
+  and its ways out — each with the rise and the sheet it lands on — and every
+  portal with both its ends by name, room and floor.
+- The image comes from whichever map pack is showing, so you can export the same
+  castle twice with two different sets of art and the geometry will be identical.
+- The image is cropped to whole grid squares so the exported grid starts at 0,0
+  and needs no nudging in Foundry, Arkenforge, or Fantasy Grounds.
+- The grid dropdown defaults to splitting each drawn 10-foot square into 5-foot
+  cells, which is what most VTTs expect.
+
+Full resolution is the honest choice for a final map; quarter resolution is much
+faster while you are testing the import.
+
+What the current file produces, geometry only:
+
+| sheet | squares | portals | sight lines | lights |
+|---|---|---|---|---|
+| Main Floor | 34 × 23 | 50 | 49 | 16 |
+| Court of the Count | 34 × 23 | 26 | 34 | 7 |
+| Rooms of Weeping | 34 × 24 | 35 | 40 | 7 |
+| Spires of Ravenloft | 49 × 33 | 41 | 74 | 3 |
+| Larders of Ill Omen | 23 × 16 | 19 | 17 | 9 |
+| Dungeon and Catacombs | 30 × 30 | 81 | 75 | 6 |
+| Walls of Ravenloft | 43 × 58 | 19 | 25 | 4 |
+
+## Checking it
+
+There is no browser here and no test framework. `tools/smoke.js` evaluates a
+page in a VM with a stubbed DOM and then runs a script of checks in the same
+context, so the checks call the page's own functions against the real file:
+
+```
+node tools/smoke.js . reader     rooms, sidebars, the one-floor-at-a-time rule
+node tools/smoke.js . editor     drawing, portals, undo and redo
+node tools/smoke.js . export     UVTT geometry and the notes file
+node tools/smoke.js . picker     setting a portal's far end
+```
+
+The reader pass walks all 184 room/sheet pairs and asserts nothing off-sheet is
+listed. The editor pass draws, combines areas, sets a portal's far end across
+sheets, deletes an object and checks the portal survives with its wording, then
+undoes every step back to the starting count and redoes them. The export pass
+builds all seven sheets and checks the four portal rules hold.
+
+`python migrate.py --validate castle-ravenloft-annotations-v2.json` checks the
+file itself against the rules in `SCHEMA.md` — that every portal has two ends
+pointing at real places, that an object's drawings are all on one floor, that a
+lockable thing is a door, and so on.
+
+## Where the old model went
+
+The previous build stored a *mark* per room per thing, keyed like
+`feat:K1::f1#2@walls`, and worked out the connections between rooms by pairing
+marks that were drawn close together. `SCHEMA.md` explains what replaced it and
+why, and `migration-review.md` lists what the conversion had to guess — 323
+items, most of them cosmetic, but including 66 portals whose far side it could
+not work out and 19 places where the same doorway looks to have been marked more
+than twice. Those are the ones worth a look, and the editor's side picker is how
+you settle them.

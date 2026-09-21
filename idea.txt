@@ -1,0 +1,22 @@
+Take a look through this project. Perhaps we should do an overhaul of how the portals, rooms, and items are configured. What would be the best way to simplify and reorganize and consolidate the system?
+
+I'm thinking that perhaps we can have 2 different types of Markers. Each Marker would have the following properties:
+- Marker ID
+- (Editable) A set of shapes (polygon, rectangle, circle, line, point), which must all be on the same floor/map
+- (Editable) Lumosity (ft. of bright light, ft. of dim light)
+- (Editable) Height above ground level (range if it extends a bottom to top height)
+
+The 2 types of Markers would be:
+1. Object.
+    - Has editable properties name, description, and associated Room (e.g. K7, K75c, etc). The areas of each Room would be of this type. 
+    - Can also have editable property objecttype which determines color coding, which could be area, creature, item, or trap.
+2. Portal.
+    - Would have editable properties openable (can it be open status, allowing movement through), closable (can it be closed status, not allowing movement through), lockable (can it be locked status, which requires closable), transparency (does it block vision), secret (is it a secret portal), and default statuses openness and locked.
+    - Would also have (editable) two other MarkerIDs that it's associated with. For each MarkerID, it would have an (editable) name and (editable) description in relation to that MarkerID. For example, when looking at it from one MarkerID, its name and description describe how it looks when the "players" are on the side of that MarkerID.
+
+When looking at a Room, it would show on the sidebar the following, whether on the editor or reader view:
+1. Relevant book excerpt
+2. List of associated Object Markers.
+3. List of associated Portal Markers; a Portal Marker is associated with a Room if any of the two Markers it's associated with are associated with the Room.
+
+Feel free to push back or offer better ideas, or if you think anything is missing (e.g. functionality present in current version that would not be captured with this new framework).

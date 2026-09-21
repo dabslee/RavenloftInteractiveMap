@@ -1,27 +1,25 @@
 /* Castle Ravenloft VTT mapper
- * Mark rooms, doors, and items on the official battlemaps; everything you do
- * is written straight back to castle-ravenloft-annotations.json. */
+ *
+ * Mark rooms, the things in them, and the ways between them on the official
+ * battlemaps. The model is the one in SCHEMA.md and it is read through
+ * markers.js, which the reader loads too, so the two cannot disagree.
+ *
+ * Two things are worth knowing before reading on:
+ *
+ *   A marker holds a list of shapes. Six torches are one object drawn six
+ *   times, not six records. So the thing you pick on the left (S.markerId) and
+ *   the shape you have hold of on the map (S.sel, an item key) are different
+ *   selections, and both matter.
+ *
+ *   A room is edited one floor at a time. What the middle column lists is what
+ *   is on the sheet in front of you; the rest of the room is reached through
+ *   "Also on". markers.js decides that for both pages.
+ */
 'use strict';
-
-// ------------------------------------------------------------------ types
-const TYPES = {
-  room:          { label: 'Room',        ico: '▢', color: '#8b6fe0', shape: 'rect'  },
-  door:          { label: 'Door',        ico: '🚪', color: '#d9913f', shape: 'seg'   },
-  'secret-door': { label: 'Secret door', ico: '◈',  color: '#d64fb0', shape: 'seg'   },
-  stairs:        { label: 'Stairs',      ico: '≣',  color: '#4aa3e0', shape: 'rect'  },
-  trap:          { label: 'Trap',        ico: '⚠',  color: '#e0553f', shape: 'rect'  },
-  window:        { label: 'Window',      ico: '▤',  color: '#49c7c2', shape: 'seg'   },
-  light:         { label: 'Light',       ico: '✦',  color: '#e7c453', shape: 'point' },
-  item:          { label: 'Item',        ico: '◆',  color: '#63c07e', shape: 'point' },
-  creature:      { label: 'Creature',    ico: '☠',  color: '#c2453f', shape: 'point' },
-  wall:          { label: 'Wall',        ico: '▬',  color: '#b9b2cc', shape: 'seg'   },
-  note:          { label: 'Note',        ico: '✎',  color: '#9a93b0', shape: 'point' },
-};
-const TYPE_KEYS = Object.keys(TYPES).filter(k => k !== 'room');
 
 // ------------------------------------------------------------------ state
 let DATA = null;                       // castle-data.json
-let ANN = null;                        // annotations
+let ANN = null;                        // the annotations, v2
 let PACKS = { base: 'References/img/map_packs', default: 'default', packs: [] };
 const ROOMS = new Map();               // id -> room
 const LEVELS = new Map();              // id -> level
@@ -29,8 +27,9 @@ const LEVELS = new Map();              // id -> level
 const S = {
   levelId: null,
   roomId: null,
-  mapPack: 'default',                  // which folder of battlemap sheets to draw
-  target: null,                        // {kind:'room'|'feat', id}
+  mapPack: 'default',
+  markerId: null,                      // what drawing goes into
+  sel: null,                           // "<markerId>#<n>": the shape in hand
   tool: 'select',
   snap: 'corner',
   showGrid: true,
@@ -40,19 +39,19 @@ const S = {
   onlyUnmarked: false,
   hideSubs: false,
   view: { scale: 1, tx: 0, ty: 0 },
-  draft: null,                         // in-progress shape
+  draft: null,
   drag: null,
   calibrating: false,
-  sel: null,                           // selected markId
-  hover: null,
   hoverEdge: null,
-  snapSuspended: false,   // Alt held: snap off until it is let go
-  boolMode: 'new',       // new | add | sub, for area drawing
-  picking: null,         // {mode:'same'|'conn', from} while the map is armed to name a link
+  snapSuspended: false,
+  boolMode: 'new',
+  momentaryBool: null,
+  sideTarget: null,                    // {portalId, i} while the map is armed
+  pick: null,                          // what is under the cursor while it is
 };
 
 const imgCache = new Map();
-let img = null;                        // currently displayed HTMLImageElement
+let img = null;
 let needsDraw = true;
 
 // ------------------------------------------------------------------ dom
@@ -62,139 +61,170 @@ canvas.tabIndex = 0;
 const ctx = canvas.getContext('2d');
 
 // ==================================================================
-//  boot
+//  loading
 // ==================================================================
 (async function boot() {
   const [d, a, packs] = await Promise.all([
     fetch('/castle-data.json').then(r => r.json()),
-    fetch('/api/annotations').then(r => r.json()),
+    fetch('/api/annotations-v2').then(r => r.json()),
     fetch('/api/map-packs').then(r => r.json()).catch(() => null),
   ]);
   DATA = d; ANN = a;
   if (packs && packs.packs) PACKS = packs;
-  S.mapPack = pickPack(localStorage.getItem('cr.pack'));
-  ANN.grids ||= {}; ANN.marks ||= {}; ANN.customFeatures ||= {};
-  ANN.hiddenFeatures ||= []; ANN.roomStatus ||= {}; ANN.roomNotes ||= {};
-  ANN.renames ||= {};
-  ANN.linkEdits ||= {};
-  for (const k of ['same', 'notSame', 'conn', 'notConn']) ANN.linkEdits[k] ||= [];
-  ANN.hiddenFeatures = [...new Set(ANN.hiddenFeatures)];
-  // marks used to be keyed without a level; move them onto their own level
-  for (const [k, m] of Object.entries(ANN.marks)) {
-    if (!k.includes('@') && m && m.levelId) {
-      ANN.marks[k + '@' + m.levelId] = m;
-      delete ANN.marks[k];
-    }
-  }
-
-  // outlines used to be a bare rect or polygon; give them edges so they can be
-  // cut about. Rooms get walls, markers get open boundaries.
-  for (const [k, m] of Object.entries(ANN.marks)) {
-    if (m.shape && (m.shape.type === 'rect' || m.shape.type === 'poly')) {
-      m.shape = makeArea(m.shape, k.startsWith('room:') ? WALL : OPEN);
-    }
-    if (m.shape && m.shape.type === 'area' && m.shape.parts.length > 1) {
-      geomVersion++; normalizeArea(m.shape);
-    }
-  }
-
-  // features used to hold a single placement; number them so more can be added
-  for (const [k, m] of Object.entries(ANN.marks)) {
-    if (k.startsWith('feat:') && !k.slice(0, k.lastIndexOf('@')).includes('#')) {
-      const at = k.lastIndexOf('@');
-      ANN.marks[k.slice(0, at) + '#1' + k.slice(at)] = m;
-      delete ANN.marks[k];
-    }
-  }
-
+  ANN.markers ||= {};
+  ANN.grids ||= {};
+  ANN.roomNotes ||= {};
   DATA.levels.forEach(l => LEVELS.set(l.id, l));
   DATA.rooms.forEach(r => ROOMS.set(r.id, r));
+  for (const l of DATA.levels) ANN.grids[l.id] ||= Object.assign({}, l.grid);
+  reindex();
 
-  relink();
   buildLevelSelect();
   buildPackSelect();
   buildTypeFilters();
   buildAddTypes();
   wire();
-  await setLevel(localStorage.getItem('cr.level') || DATA.levels[1].id, true);
   renderRooms();
-  renderFeatures();
+
+  const lv = localStorage.getItem('cr.level');
+  await setLevel(LEVELS.has(lv) ? lv : DATA.levels[1].id, true);
+  const room = localStorage.getItem('cr.room');
+  if (room && ROOMS.has(room)) selectRoom(room, { keepView: true });
+  else renderRoomPanel();
   loop();
-  if (!Object.keys(ANN.marks).length) {
-    hint('<b>Pick a room on the left</b>, then drag a box over it on the map. '
-       + 'Its doors and items appear in the middle column: click one and place it. '
-       + 'Keys: <b>V</b> select · <b>R</b> rect · <b>P</b> poly · <b>D</b> door · <b>T</b> point · <b>F</b> fit · space-drag pans.');
-  }
 })();
 
 // ==================================================================
-//  annotations helpers
+//  changing markers
 // ==================================================================
-// A mark is scoped to a level: K18, K20 and K21 are drawn on several map
-// sheets, so each can carry its own outline per floor.
-const mid = (kind, id, levelId) => kind + ':' + id + '@' + (levelId || S.levelId);
-const getMark = k => ANN.marks[k] || null;
+// Everything that writes goes through here, so undo and save are in one place
+// and no part of the app has to remember to call them.
 
-// A feature can be placed as many times as it needs to be: "Fluttering torches"
-// is six points, "Double doors" may be two openings. Each placement is its own
-// mark, numbered after a #, so it selects, moves, deletes and undoes on its own.
-const featKey = (fid, n, levelId) =>
-  'feat:' + fid + '#' + n + '@' + (levelId || S.levelId);
-
-const splitKey = k => {
-  const at = k.lastIndexOf('@');
-  const head = at < 0 ? k : k.slice(0, at);
-  const c = head.indexOf(':');
-  let id = head.slice(c + 1), inst = 1;
-  const h = id.lastIndexOf('#');
-  if (h > 0) { inst = +id.slice(h + 1) || 1; id = id.slice(0, h); }
-  return { kind: head.slice(0, c), id, inst,
-           levelId: at < 0 ? (ANN.marks[k] || {}).levelId : k.slice(at + 1) };
-};
-
-/** Every mark belonging to this room or feature, across levels and placements. */
-function marksOf(kind, id) {
-  const exact = kind + ':' + id + '@';
-  const numbered = kind + ':' + id + '#';
-  return Object.entries(ANN.marks)
-    .filter(([k]) => k.startsWith(exact) || k.startsWith(numbered));
-}
-const hasMark = (kind, id) => marksOf(kind, id).length > 0;
-
-/** Placements of one feature on one level, in order. */
-function placementsOf(fid, levelId = S.levelId) {
-  return marksOf('feat', fid)
-    .filter(([k]) => splitKey(k).levelId === levelId)
-    .sort((a, b) => splitKey(a[0]).inst - splitKey(b[0]).inst);
+const B36 = '0123456789abcdefghijklmnopqrstuvwxyz';
+function mintId(prefix) {
+  let id;
+  do {
+    id = prefix + '_';
+    for (let i = 0; i < 10; i++) id += B36[Math.floor(Math.random() * 36)];
+  } while (ANN.markers[id]);
+  return id;
 }
 
-function nextFeatKey(fid) {
-  let n = 1;
-  while (ANN.marks[featKey(fid, n)]) n++;
-  return featKey(fid, n);
+/** Make a change, with one undo step and one save around it. */
+function edit(label, fn) {
+  pushHistory(label);
+  fn();
+  reindex();
+  save();
+  needsDraw = true;
+}
+
+function newObject(roomId, objectType, name, description) {
+  const id = mintId('o');
+  ANN.markers[id] = {
+    id, kind: 'object', objectType, room: roomId,
+    name: name || TYPES[objectType].label, description: description || '',
+    shapes: [], height: null, light: null, seed: null,
+  };
+  return id;
+}
+
+function newPortal(roomId, passage, name, description) {
+  const id = mintId('p');
+  // one side is where you are; the other is for you to say
+  const home = areaObjectOf(roomId, S.levelId) || areaObjectOf(roomId, homeSheet(roomId));
+  ANN.markers[id] = {
+    id, kind: 'portal', passage,
+    lockable: false, transparent: passage === 'barrier', secret: false,
+    state: passage === 'open' ? 'open' : 'closed',
+    sides: [
+      { marker: home, name: name || '', description: description || '' },
+      { marker: null, name: '', description: '' },
+    ],
+    shapes: [], height: null, light: null, seeds: [],
+  };
+  return id;
+}
+
+/** The object that is a room's outline on a sheet, if it has one. */
+function areaObjectOf(roomId, levelId) {
+  for (const id of objectsOfRoom(roomId)) {
+    const m = marker(id);
+    if (m.objectType === 'area' && (m.shapes || []).some(s => s.level === levelId)) return id;
+  }
+  return null;
+}
+
+/** The room's outline on this sheet, made if it is not there yet. */
+function ensureArea(roomId, levelId) {
+  const got = areaObjectOf(roomId, levelId);
+  if (got) return got;
+  // an outline with no shapes yet may be waiting to be drawn somewhere
+  const blank = objectsOfRoom(roomId).find(id => {
+    const m = marker(id);
+    return m.objectType === 'area' && !(m.shapes || []).length;
+  });
+  if (blank) return blank;
+  const r = ROOMS.get(roomId);
+  return newObject(roomId, 'area', (r && r.name) || roomId, '');
+}
+
+/** Drop a marker, and let go of anything pointing at it. */
+function deleteMarker(id) {
+  const m = marker(id);
+  if (!m) return;
+  edit('delete ' + (nameOf(m, S.roomId) || 'marker'), () => {
+    if (m.kind === 'object') {
+      for (const other of Object.values(ANN.markers)) {
+        if (other.kind !== 'portal') continue;
+        for (const side of other.sides) {
+          // the wording stays: it still describes the way, whoever it leads to
+          if (side.marker === id) side.marker = null;
+        }
+      }
+    }
+    delete ANN.markers[id];
+  });
+  if (S.markerId === id) S.markerId = null;
+  if (S.sel && S.sel.startsWith(id + '#')) S.sel = null;
+  renderRooms(); renderRoomPanel();
+}
+
+/** Drop one shape of a marker, leaving the marker itself. */
+function deleteShape(key) {
+  const it = ITEMS.get(key);
+  if (!it) return;
+  edit('remove one drawing of ' + (nameOf(it.marker, S.roomId) || 'marker'), () => {
+    it.marker.shapes.splice(it.i, 1);
+  });
+  S.sel = null;
+  renderRoomPanel();
+}
+
+function setField(id, path, value, label) {
+  const m = marker(id);
+  if (!m) return;
+  const keys = path.split('.');
+  let node = m;
+  for (const k of keys.slice(0, -1)) node = node[k];
+  if (node[keys[keys.length - 1]] === value) return;
+  edit(label || 'edit ' + path, () => { node[keys[keys.length - 1]] = value; });
+  renderRooms(); renderRoomPanel();
 }
 
 // ------------------------------------------------------------------ undo
-// Snapshots of everything the UI can change. Marks, the feature list edits and
-// the grid all ride on one stack, so ctrl+Z walks back through your actions in
-// the order you took them whatever kind they were.
 const HISTORY = { undo: [], redo: [], limit: 150, lastTag: null, lastAt: 0 };
+const snapshot = () => JSON.stringify({ markers: ANN.markers, grids: ANN.grids,
+                                        roomNotes: ANN.roomNotes });
 
-const snapshot = () => JSON.stringify({
-  marks: ANN.marks, customFeatures: ANN.customFeatures,
-  hiddenFeatures: ANN.hiddenFeatures, grids: ANN.grids, renames: ANN.renames,
-  linkEdits: ANN.linkEdits,
-});
-
-/** Record the state as it is now, before a change. `tag` coalesces a burst of
- *  the same kind of edit (dragging a grid offset) into one undo step. */
 function pushHistory(label, tag) {
   const now = Date.now();
-  if (tag && HISTORY.lastTag === tag && now - HISTORY.lastAt < 900) {
+  // a run of nudges on the same thing is one step, not forty
+  if (tag && tag === HISTORY.lastTag && now - HISTORY.lastAt < 900) {
     HISTORY.lastAt = now;
-    return;                                  // same burst, already recorded
+    return;
   }
-  HISTORY.undo.push({ state: snapshot(), label: label || 'change' });
+  HISTORY.undo.push({ label, json: snapshot() });
   if (HISTORY.undo.length > HISTORY.limit) HISTORY.undo.shift();
   HISTORY.redo.length = 0;
   HISTORY.lastTag = tag || null;
@@ -203,153 +233,87 @@ function pushHistory(label, tag) {
 }
 
 function applySnapshot(json) {
-  const o = JSON.parse(json);
-  geomVersion++;
-  ANN.marks = o.marks;
-  ANN.customFeatures = o.customFeatures;
-  ANN.hiddenFeatures = o.hiddenFeatures;
-  ANN.grids = o.grids;
-  ANN.renames = o.renames || {};
-  ANN.linkEdits = o.linkEdits || { same: [], notSame: [], conn: [], notConn: [] };
-  for (const k of ['same', 'notSame', 'conn', 'notConn']) ANN.linkEdits[k] ||= [];
-  if (S.sel && !ANN.marks[S.sel]) S.sel = null;
-  S.draft = null; S.drag = null;
+  const d = JSON.parse(json);
+  ANN.markers = d.markers;
+  ANN.grids = d.grids;
+  ANN.roomNotes = d.roomNotes || {};
+  if (S.sel && !ITEMS.has(S.sel)) S.sel = null;
+  if (S.markerId && !ANN.markers[S.markerId]) S.markerId = null;
+  reindex();
   save();
-  syncGridDialog();
-  renderRooms(); renderFeatures();
+  renderRooms(); renderRoomPanel();
   needsDraw = true;
 }
 
 function undo() {
-  if (!HISTORY.undo.length) { hint('Nothing left to undo.'); return; }
-  const entry = HISTORY.undo.pop();
-  HISTORY.redo.push({ state: snapshot(), label: entry.label });
+  const step = HISTORY.undo.pop();
+  if (!step) return;
+  HISTORY.redo.push({ label: step.label, json: snapshot() });
   HISTORY.lastTag = null;
-  applySnapshot(entry.state);
-  hint('Undid: ' + esc(entry.label) + '. <b>Ctrl+Shift+Z</b> to redo.');
+  applySnapshot(step.json);
+  hint('Undid ' + esc(step.label) + '.');
   updateHistoryUI();
 }
 
 function redo() {
-  if (!HISTORY.redo.length) { hint('Nothing left to redo.'); return; }
-  const entry = HISTORY.redo.pop();
-  HISTORY.undo.push({ state: snapshot(), label: entry.label });
+  const step = HISTORY.redo.pop();
+  if (!step) return;
+  HISTORY.undo.push({ label: step.label, json: snapshot() });
   HISTORY.lastTag = null;
-  applySnapshot(entry.state);
-  hint('Redid: ' + esc(entry.label) + '.');
+  applySnapshot(step.json);
+  hint('Redid ' + esc(step.label) + '.');
   updateHistoryUI();
 }
 
 function updateHistoryUI() {
   const u = $('#undoBtn'), r = $('#redoBtn');
-  if (!u) return;
   u.disabled = !HISTORY.undo.length;
   r.disabled = !HISTORY.redo.length;
-  u.title = HISTORY.undo.length
-    ? 'Undo ' + HISTORY.undo[HISTORY.undo.length - 1].label + ' (Ctrl+Z)'
-    : 'Nothing to undo (Ctrl+Z)';
-  r.title = HISTORY.redo.length
-    ? 'Redo ' + HISTORY.redo[HISTORY.redo.length - 1].label + ' (Ctrl+Shift+Z)'
-    : 'Nothing to redo (Ctrl+Shift+Z)';
-}
-
-function setMark(k, mark) {
-  if (mark) ANN.marks[k] = mark; else delete ANN.marks[k];
-  save();
-  renderRooms(); renderFeatures(); needsDraw = true;
-}
-
-function grid(levelId = S.levelId) {
-  const lv = LEVELS.get(levelId);
-  if (!ANN.grids[levelId]) ANN.grids[levelId] = Object.assign({}, lv.grid);
-  const g = ANN.grids[levelId];
-  g.size = +g.size || lv.grid.size;
-  g.offsetX = +g.offsetX || 0;
-  g.offsetY = +g.offsetY || 0;
-  g.feetPerSquare = +g.feetPerSquare || 10;
-  return g;
-}
-
-// features of a room = auto ones minus hidden, plus custom
-function featuresOf(roomId) {
-  const r = ROOMS.get(roomId);
-  if (!r) return [];
-  const hidden = new Set(ANN.hiddenFeatures);
-  const auto = (r.features || []).filter(f => !hidden.has(f.id));
-  const custom = ANN.customFeatures[roomId] || [];
-  return auto.concat(custom).map(f => {
-    const renamed = ANN.renames[f.id];
-    return renamed ? Object.assign({}, f, { label: renamed, renamed: true }) : f;
-  });
-}
-
-function renameFeature(fid, label) {
-  const f = featuresOf(fid.split('::')[0]).find(x => x.id === fid);
-  if (!f) return;
-  label = label.trim();
-  if (!label || label === f.label) return;
-  pushHistory('rename "' + f.label + '"');
-  const custom = (ANN.customFeatures[fid.split('::')[0]] || []).find(x => x.id === fid);
-  if (custom) delete ANN.renames[fid];        // edit a custom entry in place
-  if (custom) custom.label = label; else ANN.renames[fid] = label;
-  save(); renderFeatures(); needsDraw = true;
-}
-
-function roomProgress(roomId) {
-  const feats = featuresOf(roomId);
-  const placed = feats.filter(f => hasMark('feat', f.id)).length;
-  const area = hasMark('room', roomId);
-  return { placed, total: feats.length, area };
-}
-
-/** Interior walls belonging to a room, on the level showing now. */
-function wallsOf(roomId, levelId = S.levelId) {
-  return Object.entries(ANN.marks)
-    .filter(([k]) => k.startsWith('iwall:' + roomId + '~') && k.endsWith('@' + levelId));
-}
-
-function nextWallKey(roomId) {
-  let n = 1;
-  while (ANN.marks['iwall:' + roomId + '~' + n + '@' + S.levelId]) n++;
-  return 'iwall:' + roomId + '~' + n + '@' + S.levelId;
+  const last = HISTORY.undo[HISTORY.undo.length - 1];
+  u.title = last ? 'Undo ' + last.label + ' (Ctrl+Z)' : 'Nothing to undo';
+  const next = HISTORY.redo[HISTORY.redo.length - 1];
+  r.title = next ? 'Redo ' + next.label + ' (Ctrl+Shift+Z)' : 'Nothing to redo';
 }
 
 // ------------------------------------------------------------------ save
 let saveTimer = null, savePending = false;
+
 function save() {
   setSaveState('dirty', 'unsaved');
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => { relink(); flush(); }, 500);
-}
-async function flush() {
-  if (savePending) { save(); return; }
   savePending = true;
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(flush, 450);
+}
+
+async function flush() {
+  if (!savePending) return;
+  savePending = false;
   setSaveState('saving', 'saving…');
   try {
-    const res = await fetch('/api/annotations', {
+    const res = await fetch('/api/annotations-v2', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(ANN),
     });
     if (!res.ok) throw new Error(await res.text());
-    setSaveState('ok', 'saved');
-  } catch (e) {
-    setSaveState('err', 'save failed');
-    console.error(e);
-  } finally { savePending = false; }
+    setSaveState('idle', 'saved');
+  } catch (err) {
+    savePending = true;
+    setSaveState('error', 'not saved');
+    console.error(err);
+  }
 }
+
 function setSaveState(cls, txt) {
   const el = $('#saveState');
   el.className = 'save ' + cls;
   el.textContent = txt;
 }
+
 window.addEventListener('beforeunload', e => {
-  if ($('#saveState').classList.contains('dirty')) { flush(); e.preventDefault(); e.returnValue = ''; }
+  if (savePending) { flush(); e.preventDefault(); e.returnValue = ''; }
 });
 
-// ==================================================================
-//  level / image
-// ==================================================================
 function buildLevelSelect() {
   $('#levelSelect').innerHTML = DATA.levels
     .map(l => `<option value="${l.id}">${l.name}</option>`).join('');
@@ -530,6 +494,8 @@ function snapRadius(r) {
 }
 
 // ==================================================================
+
+// ==================================================================
 //  rendering
 // ==================================================================
 function loop() { if (needsDraw) { draw(); needsDraw = false; } requestAnimationFrame(loop); }
@@ -538,169 +504,92 @@ function draw() {
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, cw(), chh());
-  ctx.fillStyle = '#0c0b10';
+  ctx.fillStyle = '#0e0d13';
   ctx.fillRect(0, 0, cw(), chh());
-
-  const v = S.view;
-  ctx.save();
-  ctx.translate(v.tx, v.ty);
-  ctx.scale(v.scale, v.scale);
-
+  if (!S.levelId) return;
   const lv = LEVELS.get(S.levelId);
-  if (img) {
-    ctx.imageSmoothingEnabled = v.scale < 2;
-    ctx.drawImage(img, 0, 0, lv.width, lv.height);
-  } else {
-    ctx.fillStyle = '#1a1822';
-    ctx.fillRect(0, 0, lv.width, lv.height);
-  }
+
+  ctx.save();
+  ctx.translate(S.view.tx, S.view.ty);
+  ctx.scale(S.view.scale, S.view.scale);
+  if (img) ctx.drawImage(img, 0, 0, lv.width, lv.height);
   if (S.showGrid) drawGrid(lv);
-  drawMarks(lv);
-  drawLinks();
+  drawItems();
+  drawSides();
   drawDraft();
+  drawPick();
   ctx.restore();
 }
 
 function drawGrid(lv) {
   const g = grid();
-  const step = g.size;
-  if (step * S.view.scale < 4) return;
+  ctx.save();
   ctx.lineWidth = 1 / S.view.scale;
-  ctx.strokeStyle = 'rgba(120,190,255,.34)';
+  ctx.strokeStyle = 'rgba(255,255,255,.10)';
   ctx.beginPath();
-  for (let x = g.offsetX % step; x <= lv.width; x += step) { ctx.moveTo(x, 0); ctx.lineTo(x, lv.height); }
-  for (let y = g.offsetY % step; y <= lv.height; y += step) { ctx.moveTo(0, y); ctx.lineTo(lv.width, y); }
+  for (let x = g.offsetX % g.size; x < lv.width; x += g.size) { ctx.moveTo(x, 0); ctx.lineTo(x, lv.height); }
+  for (let y = g.offsetY % g.size; y < lv.height; y += g.size) { ctx.moveTo(0, y); ctx.lineTo(lv.width, y); }
   ctx.stroke();
+  ctx.restore();
 }
 
-function marksOnLevel() {
-  const out = [];
-  for (const [k, m] of Object.entries(ANN.marks)) {
-    if (m && m.levelId === S.levelId) out.push([k, m]);
-  }
-  return out;
+/** What an item is, for drawing: colour, label, and whether it is an outline. */
+function itemMeta(key) {
+  const meta = markMeta(key);
+  const it = ITEMS.get(key);
+  return Object.assign(meta, {
+    isArea: !!it && it.marker.kind === 'object' && it.marker.objectType === 'area',
+  });
 }
 
-function markMeta(key) {
-  const { kind, id } = splitKey(key);
-  if (kind === 'iwall') {
-    const roomId = id.split('~')[0];
-    return { type: 'wall', label: '', sub: roomId, roomId };
-  }
-  if (kind === 'room') {
-    const r = ROOMS.get(id);
-    return { type: 'room', label: id, sub: r ? r.name : '', roomId: id };
-  }
-  const fid = id;
-  const roomId = fid.split('::')[0];
-  const f = featuresOf(roomId).find(x => x.id === fid)
-        || (ROOMS.get(roomId)?.features || []).find(x => x.id === fid);
-  return { type: f ? f.type : 'note', label: f ? f.label : fid, sub: roomId, roomId };
-}
-
-function drawMarks(lv) {
+function drawItems() {
   const sc = S.view.scale;
-  const entries = marksOnLevel();
-  // rooms under features
-  entries.sort((a, b) => (a[0].startsWith('room:') ? 0 : 1) - (b[0].startsWith('room:') ? 0 : 1));
-  for (const [key, m] of entries) {
-    const meta = markMeta(key);
-    const sk = splitKey(key);
-    const quiet = sk.kind === 'feat' && sk.inst > 1 && key !== S.sel;
+  const items = itemsOnLevel();
+  // outlines first, so the things standing in them read on top
+  items.sort((a, b) => (a.marker.objectType === 'area' ? 0 : 1)
+                     - (b.marker.objectType === 'area' ? 0 : 1));
+  const mine = new Set(itemsForRoom(S.roomId, S.levelId).map(it => it.key));
+  for (const it of items) {
+    const meta = itemMeta(it.key);
     const t = TYPES[meta.type] || TYPES.note;
-    const isTarget = S.target && key === mid(S.target.kind, S.target.id);
-    const isSel = key === S.sel;
-    const dim = S.roomId && meta.roomId !== S.roomId;
-    ctx.globalAlpha = dim && !isSel ? 0.42 : 1;
-    drawShape(m.shape, t.color, isSel || isTarget, sc, quiet ? null : meta, m);
+    const selected = it.key === S.sel;
+    const targeted = it.id === S.markerId;
+    const dim = S.roomId && !mine.has(it.key);
+    ctx.globalAlpha = dim && !selected && !targeted ? 0.4 : 1;
+    drawShape(it.shape, t.color, selected || targeted, sc, meta, it.marker);
     ctx.globalAlpha = 1;
   }
 }
 
-/** Thin dashed threads from the selection to whatever it is tied to, so a link
- *  is something you can see on the map and not just a claim in a list. Only
- *  the ends that are on this sheet can be drawn; the rest are in the panel. */
-function drawLinks() {
-  const sel = S.sel && ANN.marks[S.sel];
+/**
+ * While a portal is selected, a thread to each end it names. A portal is the
+ * one thing here whose meaning is not where it sits but what it joins, so the
+ * join is worth being able to see rather than only read.
+ */
+function drawSides() {
+  const it = S.sel && ITEMS.get(S.sel);
+  const m = it ? it.marker : marker(S.markerId);
+  if (!m || m.kind !== 'portal') return;
+  const from = it ? centroid(shapePoints(it.shape)) : null;
   const sc = S.view.scale;
-
-  if (S.picking) {                                  // ring the end you started from
-    const m = S.picking.mode === 'same'
-      ? ANN.marks[S.picking.from]
-      : ANN.marks[mid('room', S.picking.from, S.levelId)];
-    const c = m && m.levelId === S.levelId && shapeCenter(m.shape);
-    if (c) {
-      ctx.save();
-      ctx.strokeStyle = '#e4b363';
-      ctx.lineWidth = 2 / sc;
-      ctx.setLineDash([5 / sc, 4 / sc]);
-      ctx.beginPath();
-      ctx.arc(c[0], c[1], 16 / sc, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.restore();
-    }
-  }
-
-  // a feature placed more than once gets its placements numbered while it is
-  // selected, because links are made placement by placement: the "#5" you are
-  // linking is one of these windows, not the whole row of them
-  if (S.target && S.target.kind === 'feat') {
-    const places = placementsOf(S.target.id);
-    if (places.length > 1) {
-      ctx.save();
-      ctx.font = '700 ' + (11 / sc) + 'px Inter, Segoe UI, sans-serif';
-      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      for (const [k, m] of places) {
-        const c = shapeCenter(m.shape);
-        if (!c) continue;
-        const n = splitKey(k).inst;
-        const tied = (LINKS.get(k)?.same || []).length > 0;
-        const r = 9 / sc;
-        const x = c[0] + 14 / sc, y = c[1] - 14 / sc;
-        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fillStyle = tied ? '#c3aaff' : '#2c2640';
-        ctx.fill();
-        ctx.lineWidth = 1.5 / sc; ctx.strokeStyle = k === S.sel ? '#fff' : '#1b1826';
-        ctx.stroke();
-        ctx.fillStyle = tied ? '#1b1826' : '#cbb9ff';
-        ctx.fillText(String(n), x, y + 0.5 / sc);
-      }
-      ctx.restore();
-    }
-  }
-
-  if (!sel) return;
-  const rec = LINKS.get(S.sel);
-  const a = rec && shapeCenter(sel.shape);
-  if (!a) return;
-  const ends = [];
-  for (const k of rec.same) {
-    const m = ANN.marks[k];
-    if (m && m.levelId === S.levelId) ends.push([shapeCenter(m.shape), '#c3aaff']);
-  }
-  if (splitKey(S.sel).kind === 'room') {
-    for (const id of rec.to) {
-      const m = ANN.marks[mid('room', id, S.levelId)];
-      if (m) ends.push([shapeCenter(m.shape), '#7fb8e8']);
-    }
-  }
-  if (!ends.length) return;
   ctx.save();
+  ctx.setLineDash([7 / sc, 6 / sc]);
   ctx.lineWidth = 1.6 / sc;
-  ctx.globalAlpha = 0.85;
-  for (const [b, color] of ends) {
-    if (!b) continue;
-    ctx.strokeStyle = color;
-    ctx.fillStyle = color;
-    ctx.setLineDash([7 / sc, 5 / sc]);
-    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.beginPath(); ctx.arc(b[0], b[1], 3.5 / sc, 0, Math.PI * 2); ctx.fill();
+  for (const side of m.sides) {
+    const o = marker(side.marker);
+    if (!o) continue;
+    const there = (o.shapes || []).find(s => s.level === S.levelId);
+    if (!there) continue;
+    const c = centroid(shapePoints(there));
+    ctx.strokeStyle = '#8b6fe0cc';
+    ctx.beginPath();
+    if (from) { ctx.moveTo(from[0], from[1]); ctx.lineTo(c[0], c[1]); ctx.stroke(); }
+    ctx.beginPath(); ctx.arc(c[0], c[1], 7 / sc, 0, 7);
+    ctx.fillStyle = '#8b6fe055'; ctx.fill(); ctx.stroke();
   }
   ctx.restore();
 }
 
-// one reusable layer, used to punch subtract parts out of add parts exactly
 const layer = document.createElement('canvas');
 const lctx = layer.getContext('2d');
 
@@ -798,28 +687,20 @@ function drawShape(sh, color, strong, sc, meta, m) {
     if (strong && S.tool !== 'edges') drawHandles(sh, sc);
     return;
   }
-  const lw = (strong ? 3 : 2) / sc;
-  ctx.lineWidth = lw;
+  ctx.lineWidth = (strong ? 3 : 2) / sc;
   ctx.strokeStyle = color;
   ctx.fillStyle = color + (strong ? '44' : '28');
   ctx.setLineDash(m && m.secret ? [8 / sc, 6 / sc] : []);
 
-  if (sh.type === 'rect') {
-    ctx.beginPath(); ctx.rect(sh.x, sh.y, sh.w, sh.h); ctx.fill(); ctx.stroke();
-    label(meta, sh.x + sh.w / 2, sh.y + sh.h / 2, sc, color, strong);
-  } else if (sh.type === 'poly') {
-    if (sh.pts.length < 2) return;
-    ctx.beginPath();
-    sh.pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
-    ctx.closePath(); ctx.fill(); ctx.stroke();
-    const c = centroid(sh.pts);
-    label(meta, c[0], c[1], sc, color, strong);
-  } else if (sh.type === 'seg') {
-    ctx.lineWidth = (strong ? 9 : 7) / sc;
+  if (sh.type === 'line') {
+    // a wall drawn inside a room is scenery: thin, grey, and left unlabelled
+    const wall = !!sh.wall && m && m.kind === 'object';
+    ctx.lineWidth = (wall ? 4 : (strong ? 9 : 7)) / sc;
+    if (wall) ctx.strokeStyle = '#b9b2cc';
     ctx.lineCap = 'round';
     ctx.beginPath(); ctx.moveTo(sh.x1, sh.y1); ctx.lineTo(sh.x2, sh.y2); ctx.stroke();
     ctx.lineCap = 'butt';
-    label(meta, (sh.x1 + sh.x2) / 2, (sh.y1 + sh.y2) / 2, sc, color, strong, true);
+    if (!wall) label(meta, (sh.x1 + sh.x2) / 2, (sh.y1 + sh.y2) / 2, sc, color, strong, true);
   } else if (sh.type === 'point') {
     const r = 11 / sc;
     ctx.beginPath(); ctx.arc(sh.x, sh.y, r, 0, 7);
@@ -832,24 +713,22 @@ function drawShape(sh, color, strong, sc, meta, m) {
 }
 
 function label(meta, x, y, sc, color, strong, small) {
-  if (!meta) return;
-  // declutter: feature labels only once you are zoomed in enough to read them
-  if (meta.type !== 'room' && !strong && sc < 0.28) return;
+  if (!meta || !meta.label) return;
+  // declutter: labels on the small things only once they can be read
+  if (!meta.isArea && !strong && sc < 0.28) return;
   const px = (small ? 12 : 15) / sc;
   if (px * sc < 8) return;
   ctx.font = (strong ? '700 ' : '600 ') + px + 'px Inter, Segoe UI, sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  const txt = meta.type === 'room' ? meta.label : meta.label;
   ctx.lineWidth = 3.5 / sc; ctx.strokeStyle = 'rgba(10,9,14,.92)';
-  ctx.strokeText(txt, x, y);
+  ctx.strokeText(meta.label, x, y);
   ctx.fillStyle = strong ? '#fff' : '#f2eefb';
-  ctx.fillText(txt, x, y);
+  ctx.fillText(meta.label, x, y);
 }
 
 function drawHandles(sh, sc) {
-  const pts = shapePoints(sh);
   const r = 5 / sc;
-  for (const p of pts) {
+  for (const p of shapePoints(sh)) {
     ctx.beginPath(); ctx.rect(p[0] - r, p[1] - r, r * 2, r * 2);
     ctx.fillStyle = '#fff'; ctx.fill();
     ctx.lineWidth = 1.5 / sc; ctx.strokeStyle = '#15121c'; ctx.stroke();
@@ -886,7 +765,7 @@ function drawDraft() {
   }
   else if (d.type === 'seg') {
     ctx.lineWidth = (d.wall ? 9 : 7) / sc; ctx.lineCap = 'round';
-    if (d.wall) ctx.strokeStyle = TYPES.wall.color;
+    if (d.wall) ctx.strokeStyle = '#b9b2cc';       // the grey a laid wall draws in
     ctx.beginPath(); ctx.moveTo(d.x1, d.y1); ctx.lineTo(d.x2, d.y2); ctx.stroke();
     ctx.lineCap = 'butt';
   } else if (d.type === 'poly') {
@@ -905,7 +784,6 @@ function drawDraft() {
   }
   ctx.restore();
 }
-
 
 // ==================================================================
 //  areas: composite shapes with per-edge wall / open boundaries
@@ -1189,688 +1067,118 @@ function applyAreaOp(sh, drawn, op, dflt = WALL) {
 function shapePoints(sh) {
   if (!sh) return [];
   if (sh.type === 'area') return [].concat(...sh.parts.map(p => p.ring.map(q => [q[0], q[1]])));
-  if (sh.type === 'rect') return [[sh.x, sh.y], [sh.x + sh.w, sh.y], [sh.x + sh.w, sh.y + sh.h], [sh.x, sh.y + sh.h]];
-  if (sh.type === 'poly') return sh.pts.map(p => [p[0], p[1]]);
-  if (sh.type === 'seg') return [[sh.x1, sh.y1], [sh.x2, sh.y2]];
+  if (sh.type === 'line') return [[sh.x1, sh.y1], [sh.x2, sh.y2]];
   if (sh.type === 'point') return [[sh.x, sh.y]];
   return [];
 }
+
 function setShapePoint(sh, i, x, y) {
   if (sh.type === 'area') {
+    let n = i;
     for (const part of sh.parts) {
-      if (i < part.ring.length) { part.ring[i] = [x, y]; return; }
-      i -= part.ring.length;
+      if (n < part.ring.length) { part.ring[n] = [x, y]; return; }
+      n -= part.ring.length;
     }
-    return;
-  }
-  if (sh.type === 'rect') {
-    const p = shapePoints(sh);
-    const opp = p[(i + 2) % 4];
-    sh.x = Math.min(x, opp[0]); sh.y = Math.min(y, opp[1]);
-    sh.w = Math.abs(x - opp[0]); sh.h = Math.abs(y - opp[1]);
-  } else if (sh.type === 'poly') { sh.pts[i] = [x, y]; }
-  else if (sh.type === 'seg') { if (i === 0) { sh.x1 = x; sh.y1 = y; } else { sh.x2 = x; sh.y2 = y; } }
-  else if (sh.type === 'point') { sh.x = x; sh.y = y; }
+  } else if (sh.type === 'line') {
+    if (i === 0) { sh.x1 = x; sh.y1 = y; } else { sh.x2 = x; sh.y2 = y; }
+  } else if (sh.type === 'point') { sh.x = x; sh.y = y; }
 }
+
 function moveShape(sh, dx, dy) {
   if (sh.type === 'area') {
     for (const part of sh.parts) part.ring = part.ring.map(p => [p[0] + dx, p[1] + dy]);
-    return;
-  }
-  if (sh.type === 'rect') { sh.x += dx; sh.y += dy; }
-  else if (sh.type === 'poly') sh.pts = sh.pts.map(p => [p[0] + dx, p[1] + dy]);
-  else if (sh.type === 'seg') { sh.x1 += dx; sh.y1 += dy; sh.x2 += dx; sh.y2 += dy; }
-  else if (sh.type === 'point') { sh.x += dx; sh.y += dy; }
+  } else if (sh.type === 'line') {
+    sh.x1 += dx; sh.y1 += dy; sh.x2 += dx; sh.y2 += dy;
+  } else if (sh.type === 'point') { sh.x += dx; sh.y += dy; }
 }
+
 function centroid(pts) {
+  if (!pts.length) return [0, 0];
   let x = 0, y = 0;
   for (const p of pts) { x += p[0]; y += p[1]; }
   return [x / pts.length, y / pts.length];
 }
+
+function distToSeg(p, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1, L2 = dx * dx + dy * dy;
+  if (L2 < 1e-9) return Math.hypot(p.x - x1, p.y - y1);
+  let t = ((p.x - x1) * dx + (p.y - y1) * dy) / L2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x - (x1 + dx * t), p.y - (y1 + dy * t));
+}
+
 function hitShape(sh, p, tol) {
   if (!sh) return false;
   if (sh.type === 'area') {
-    return insideArea(sh, [p.x, p.y]) ||
-      areaEdges(sh).some(e => distToSeg(p, e.a[0], e.a[1], e.b[0], e.b[1]) <= tol + 4 / S.view.scale);
+    if (sh.parts.some(part => part.ring.some((a, i) => {
+      const b = part.ring[(i + 1) % part.ring.length];
+      return distToSeg(p, a[0], a[1], b[0], b[1]) <= tol + 3 / S.view.scale;
+    }))) return true;
+    return insideArea(sh, [p.x, p.y]);
   }
-  if (sh.type === 'rect') return p.x >= sh.x - tol && p.x <= sh.x + sh.w + tol && p.y >= sh.y - tol && p.y <= sh.y + sh.h + tol;
+  if (sh.type === 'line') return distToSeg(p, sh.x1, sh.y1, sh.x2, sh.y2) <= 9 / S.view.scale + tol;
   if (sh.type === 'point') return Math.hypot(p.x - sh.x, p.y - sh.y) <= 13 / S.view.scale + tol;
-  if (sh.type === 'seg') return distToSeg(p, sh.x1, sh.y1, sh.x2, sh.y2) <= 8 / S.view.scale + tol;
-  if (sh.type === 'poly') return pointInPoly(p, sh.pts) || sh.pts.some((q, i) => {
-    const r = sh.pts[(i + 1) % sh.pts.length];
-    return distToSeg(p, q[0], q[1], r[0], r[1]) <= tol + 4 / S.view.scale;
-  });
   return false;
 }
-function distToSeg(p, x1, y1, x2, y2) {
-  const dx = x2 - x1, dy = y2 - y1;
-  const l2 = dx * dx + dy * dy;
-  let t = l2 ? ((p.x - x1) * dx + (p.y - y1) * dy) / l2 : 0;
-  t = Math.max(0, Math.min(1, t));
-  return Math.hypot(p.x - (x1 + t * dx), p.y - (y1 + t * dy));
-}
-function pointInPoly(p, pts) {
-  let inside = false;
-  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-    const xi = pts[i][0], yi = pts[i][1], xj = pts[j][0], yj = pts[j][1];
-    if ((yi > p.y) !== (yj > p.y) && p.x < (xj - xi) * (p.y - yi) / (yj - yi) + xi) inside = !inside;
-  }
-  return inside;
-}
 
 // ==================================================================
-//  heights: everything measured in feet from the main floor
+//  heights
 // ==================================================================
-// A mark carries height as { at } for a single elevation or { from, to } for
-// something with a span: a room from its floor to its ceiling, a shaft from
-// top to bottom, a torch at one height on the wall. Nothing set means the mark
-// simply sits on its sheet's floor.
-
-function levelElevation(levelId) {
-  const l = LEVELS.get(levelId);
-  return (l && typeof l.elevationFeet === 'number') ? l.elevationFeet : 0;
+function setHeight(id, from, to) {
+  const m = marker(id);
+  if (!m) return;
+  const next = (from === null && to === null) ? null
+             : (to === null || to === from) ? { at: from }
+             : { from: Math.min(from, to), to: Math.max(from, to) };
+  if (JSON.stringify(m.height || null) === JSON.stringify(next)) return;
+  edit('height of ' + (nameOf(m, S.roomId) || 'marker'), () => { m.height = next; });
+  renderRoomPanel();
 }
 
-/**
- * The floor a mark sits on. The sheet's own elevation, unless the room it
- * belongs to is one the book measures directly: the spires sheet carries book
- * maps 6 to 10, and the tower rooms on it stand well above the roof level.
- */
-function floorUnder(key, m) {
-  const meta = markMeta(key);
-  const r = ROOMS.get(meta.roomId);
-  if (r && typeof r.elevationFeet === 'number' && r.level === m.levelId) return r.elevationFeet;
-  return levelElevation(m.levelId);
-}
-
-/** The height to use for a mark: what was typed in, else the sheet's floor. */
-function heightOf(key, m) {
-  m = m || ANN.marks[key];
-  if (!m) return null;
-  if (m.height && (typeof m.height.at === 'number'
-                   || typeof m.height.from === 'number' || typeof m.height.to === 'number')) {
-    return m.height;
-  }
-  return { at: floorUnder(key, m), assumed: true };
-}
-
-function heightText(h) {
-  if (!h) return '';
-  const f = n => (Math.round(n * 10) / 10) + ' ft';
-  if (typeof h.from === 'number' || typeof h.to === 'number') {
-    return f(h.from ?? 0) + ' to ' + f(h.to ?? 0);
-  }
-  return f(h.at ?? 0);
-}
-
-/** Fill the height row from whatever is selected. */
 function renderHeight() {
   const box = $('#heightTools');
-  if (!box) return;
-  const key = S.sel && ANN.marks[S.sel] ? S.sel : null;
-  if (!key) { box.style.display = 'none'; return; }
+  const m = marker(S.markerId);
+  if (!m) { box.style.display = 'none'; return; }
   box.style.display = 'flex';
-  const meta = markMeta(key);
-  const h = heightOf(key);
+  const it = S.sel && ITEMS.get(S.sel) ? ITEMS.get(S.sel) : firstItemOn(S.markerId, S.levelId);
+  const h = it ? heightOf(it) : (m.height || { at: levelElevation(S.levelId), assumed: true });
   const assumed = !!h.assumed;
-  $('#heightWho').textContent = (meta.label || meta.type) + ':';
+  $('#heightWho').textContent = (nameOf(m, S.roomId) || 'marker') + ':';
   const f = $('#hFrom'), t = $('#hTo');
   if (document.activeElement !== f && document.activeElement !== t) {
     f.value = assumed ? '' : (typeof h.at === 'number' ? h.at : h.from ?? '');
     t.value = (assumed || typeof h.at === 'number') ? '' : (h.to ?? '');
   }
-  f.placeholder = String(floorUnder(key, ANN.marks[key]));
+  f.placeholder = String(it ? floorUnder(it) : levelElevation(S.levelId));
   f.classList.toggle('assumed', assumed);
 }
 
-function setHeight(key, from, to) {
-  const m = ANN.marks[key];
-  if (!m) return;
-  const next = (from === null && to === null) ? null
-             : (to === null || to === from) ? { at: from }
-             : { from: Math.min(from, to), to: Math.max(from, to) };
-  if (JSON.stringify(m.height || null) === JSON.stringify(next)) return;   // nothing changed
-  pushHistory('height of ' + markMeta(key).label);
-  if (next) m.height = next; else delete m.height;
-  save(); renderFeatures(); needsDraw = true;
-}
-
 // ==================================================================
-//  links: the same thing marked twice, and what leads where
+//  the room list
 // ==================================================================
-// Three kinds of link, all derived rather than typed in:
-//   same   other placements of the same physical thing, usually because a door
-//          between two rooms is on both rooms' checklists
-//   rooms  the areas the thing actually touches on this sheet
-//   to     rooms named in its own label ("south to K9", "up to K47")
-//   levels the other map sheets this same entry is marked on
-const LINKS = new Map();
-
-// Only a thing you can pass through joins two rooms. A statue that straddles a
-// boundary touches both rooms, but it is not a way between them.
-const PASSAGE_TYPES = new Set(['door', 'secret-door', 'stairs', 'window']);
-const PASSAGE_WORDS =
-  /trapdoor|trap door|ladder|chute|shaft|bridge|archway|portcullis|stair|steps|elevator|walkway|balcony|opening|doorway|hatch|teleport/i;
-const isPassage = meta =>
-  PASSAGE_TYPES.has(meta.type) || PASSAGE_WORDS.test(meta.label || '');
-
-const ROOM_RE = /\bK\d{1,2}[a-z]?\b/g;
-const CRYPT_RE = /\bcrypt\s*(\d{1,2})\b/gi;
-const CELL_RE = /\bcell\s*(K7[45][a-h])\b/gi;
-
-/** Room ids named in a piece of text, minus the room it belongs to. */
-function textTargets(label, selfRoom) {
-  const out = new Set();
-  for (const m of (label || '').matchAll(ROOM_RE)) if (ROOMS.has(m[0])) out.add(m[0]);
-  for (const m of (label || '').matchAll(CRYPT_RE)) {
-    const id = 'Crypt ' + Number(m[1]);
-    if (ROOMS.has(id)) out.add(id);
-  }
-  for (const m of (label || '').matchAll(CELL_RE)) if (ROOMS.has(m[1])) out.add(m[1]);
-  out.delete(selfRoom);
-  return [...out];
+/** How far along a room is, counted over every sheet it is drawn on. */
+function roomProgress(roomId) {
+  const objs = objectsOfRoom(roomId).map(id => marker(id));
+  const placed = objs.filter(m => (m.shapes || []).length).length;
+  const area = objs.some(m => m.objectType === 'area' && (m.shapes || []).length);
+  const loose = portalsOfRoom(roomId)
+    .filter(id => marker(id).sides.some(s => !s.marker)).length;
+  return { placed, total: objs.length, area, loose };
 }
 
-function shapeCenter(sh) {
-  const pts = shapePoints(sh);
-  if (!pts.length) return null;
-  return centroid(pts);
-}
-
-/** A line-ish mark reduced to centre, direction and length. */
-function segLike(sh) {
-  if (!sh) return null;
-  if (sh.type === 'seg') {
-    return { c: [(sh.x1 + sh.x2) / 2, (sh.y1 + sh.y2) / 2],
-             a: Math.atan2(sh.y2 - sh.y1, sh.x2 - sh.x1),
-             len: Math.hypot(sh.x2 - sh.x1, sh.y2 - sh.y1) };
-  }
-  return null;
-}
-
-const angClose = (a, b) => {
-  let d = Math.abs(a - b) % Math.PI;
-  return Math.min(d, Math.PI - d) < 0.35;         // 20 degrees, direction-blind
-};
-
-/** Two marks that are really the same physical thing on the map. */
-function sameSpot(m1, m2, g) {
-  const s1 = m1.shape, s2 = m2.shape;
-  if (!s1 || !s2) return false;
-  const l1 = segLike(s1), l2 = segLike(s2);
-  if (l1 && l2) {
-    return Math.hypot(l1.c[0] - l2.c[0], l1.c[1] - l2.c[1]) < g * 0.45 && angClose(l1.a, l2.a);
-  }
-  if (s1.type === 'point' && s2.type === 'point') {
-    return Math.hypot(s1.x - s2.x, s1.y - s2.y) < g * 0.35;
-  }
-  if ((s1.type === 'point' && l2) || (s2.type === 'point' && l1)) {
-    const p = s1.type === 'point' ? s1 : s2, l = l1 || l2;
-    return distToSeg({ x: p.x, y: p.y },
-      l.c[0] - Math.cos(l.a) * l.len / 2, l.c[1] - Math.sin(l.a) * l.len / 2,
-      l.c[0] + Math.cos(l.a) * l.len / 2, l.c[1] + Math.sin(l.a) * l.len / 2) < g * 0.35;
-  }
-  if (isArea(s1) && isArea(s2)) {
-    const c1 = shapeCenter(s1), c2 = shapeCenter(s2);
-    return c1 && c2 && Math.hypot(c1[0] - c2[0], c1[1] - c2[1]) < g * 0.4;
-  }
-  return false;
-}
-
-/** Every room outline on this level that covers a point. */
-function roomsAtPoint(levelId, pt, index) {
-  const out = [];
-  for (const e of index) {
-    const bb = e.bb;
-    if (pt[0] < bb.x0 || pt[0] > bb.x1 || pt[1] < bb.y0 || pt[1] > bb.y1) continue;
-    if (insideArea(e.shape, pt)) out.push(e.id);
-  }
-  return out;
-}
-
-/** The rooms a mark sits in or between. */
-function roomsTouching(m, index, g) {
-  const found = new Set();
-  const l = segLike(m.shape);
-  if (l) {                                         // step off both faces of the line
-    const nx = -Math.sin(l.a), ny = Math.cos(l.a);
-    for (const t of [-0.7, -0.45, 0.45, 0.7]) {
-      for (const u of [-0.3, 0, 0.3]) {            // and along it, for doors at a corner
-        const px = l.c[0] + nx * g * t + Math.cos(l.a) * l.len * u;
-        const py = l.c[1] + ny * g * t + Math.sin(l.a) * l.len * u;
-        roomsAtPoint(m.levelId, [px, py], index).forEach(r => found.add(r));
-      }
-    }
-  } else if (m.shape && m.shape.type === 'point') {
-    for (const [dx, dy] of [[0,0],[0.5,0],[-0.5,0],[0,0.5],[0,-0.5]]) {
-      roomsAtPoint(m.levelId, [m.shape.x + dx*g, m.shape.y + dy*g], index).forEach(r => found.add(r));
-    }
-  } else if (m.shape) {
-    const c = shapeCenter(m.shape);
-    if (c) roomsAtPoint(m.levelId, c, index).forEach(r => found.add(r));
-  }
-  return [...found];
-}
-
-// ------------------------------------------------------------------ by hand
-// Geometry gets the common cases right but not all of them. Two flights of
-// stairs that are the same stair never touch, because they are drawn on
-// different sheets; a passage the book only describes in prose has nothing on
-// the map to derive from at all; and now and then the proximity rule pairs two
-// doors that really are two doors. So every derived link can be added to and
-// struck out by hand, and those decisions are what get saved. A pair is one
-// string with its two ends sorted and joined by a bar, so it reads the same
-// from either side and survives a round trip through JSON.
-const pairKey = (a, b) => (a < b ? a + '|' + b : b + '|' + a);
-const pairOf = s => s.split('|');
-
-/** What geometry alone made of each mark, kept so the UI can say which links
- *  are its own doing and which are yours. */
-const AUTO = new Map();
-
-/**
- * Every way out of every room, with the thing that makes it a way.
- *
- * This is the single source of truth for what connects to what. The Connects-to
- * panel here and the reader's "ways in and out" both render exactly this list,
- * so the two cannot drift apart -- which they did, when each worked it out for
- * itself and only one of them knew about your corrections.
- *
- *   room id -> [{ to, via, how }]
- *     how 'marker'  via is a mark key: a door or stair drawn on the map
- *     how 'open'    via is a room mark key: two outlines that run together
- *     how 'text'    via is a feature id the book describes but nothing places
- *     how 'hand'    via is null: you said so in the editor
- */
-const WAYS = new Map();
-
-/** room mark key -> the rooms its open edges run into. Filled in per sheet,
- *  where the geometry is, and spent in buildWays. */
-const OPEN_EDGES = new Map();
-
-/** Every way out of a room. */
-const waysOf = roomId => WAYS.get(roomId) || [];
-
-const edits = which => (ANN.linkEdits && ANN.linkEdits[which]) || [];
-const hasEdit = (which, a, b) => edits(which).includes(pairKey(a, b));
-
-/** Would geometry alone have paired these two marks? */
-const autoLink = (a, b) => (AUTO.get(a)?.same || []).includes(b);
-
-/** Is this link standing right now, however it got there? */
-const linkedNow = (which, a, b) => which === 'same'
-  ? (LINKS.get(a)?.same || []).includes(b)
-  : waysOf(a).some(w => w.to === b);
-
-/** How a link came about: 'hand' if you made it, 'auto' if the app did, '' if
- *  there is no link at all. Connections carry their evidence on each way, so
- *  this only has to answer for the pair as a whole. */
-function linkSource(which, a, b) {
-  if (hasEdit(which === 'same' ? 'notSame' : 'notConn', a, b)) return '';
-  if (hasEdit(which, a, b)) return 'hand';
-  if (which === 'same') return autoLink(a, b) ? 'auto' : '';
-  const ws = waysOf(a).filter(w => w.to === b);
-  if (!ws.length) return '';
-  return ws.every(w => w.how === 'hand') ? 'hand'
-       : ws.some(w => w.how !== 'text') ? 'auto' : 'text';
-}
-
-/** Fold your same-as corrections into the derived ones. Runs inside relink,
- *  before the ways are built, because two marks called the same thing are a
- *  way between the rooms at their two ends. */
-function applySameEdits() {
-  AUTO.clear();
-  for (const [k, rec] of LINKS) AUTO.set(k, { same: [...rec.same] });
-
-  // -- the same physical thing, marked twice ------------------------------
-  const struck = new Set(edits('notSame'));
-  const byKey = new Map();
-  for (const s of edits('same')) {
-    const [a, b] = pairOf(s);
-    if (a === b || !ANN.marks[a] || !ANN.marks[b]) continue;      // a mark that has gone
-    if (splitKey(a).kind !== 'feat' || splitKey(b).kind !== 'feat') continue;
-    if (!byKey.has(a)) byKey.set(a, []);
-    if (!byKey.has(b)) byKey.set(b, []);
-    byKey.get(a).push(b); byKey.get(b).push(a);
-  }
-  for (const [k, rec] of LINKS) {
-    if (splitKey(k).kind !== 'feat') continue;
-    const out = new Set([...rec.same, ...(byKey.get(k) || [])]);
-    out.delete(k);
-    for (const other of [...out]) if (struck.has(pairKey(k, other))) out.delete(other);
-    rec.same = [...out].sort();
-  }
-
-}
-
-// ------------------------------------------------------------------ the ways
-/** Note a way between two rooms, both directions, once per piece of evidence. */
-function addWay(from, to, via, how) {
-  if (!from || !to || from === to) return;
-  if (!ROOMS.has(from) || !ROOMS.has(to)) return;
-  const put = (a, b) => {
-    if (!WAYS.has(a)) WAYS.set(a, []);
-    const list = WAYS.get(a);
-    // an outline running into another, or a connection you made, is one fact
-    // however many outlines of the two rooms happen to record it; a marker is
-    // told apart by which checklist entry it is, not which placement of it
-    const mine = how === 'marker' ? splitKey(via).id : how;
-    if (list.some(w => w.to === b && w.how === how
-                    && (how === 'marker' ? splitKey(w.via).id === mine : true))) return;
-    list.push({ to: b, via, how });
-  };
-  put(from, to);
-  put(to, from);
-}
-
-/**
- * Work out every way out of every room, from the marks, the module text and
- * your corrections. Runs once per relink, after the same-as links are settled.
- */
-function buildWays() {
-  WAYS.clear();
-
-  // -- passages drawn on a map -------------------------------------------
-  // A passage joins the room whose checklist it is on to each other end it
-  // reaches: the rooms its outline meets, and the rooms its own label names.
-  // That room is the hub. Two rooms that merely both touch one marker are not
-  // thereby joined to each other -- that cross-product is what used to invent a
-  // stair between a bedchamber and a hall two floors above it, because the
-  // stair's outline happened to overlap the bedchamber by a few pixels.
-  for (const [k, rec] of LINKS) {
-    if (splitKey(k).kind !== 'feat') continue;
-    const meta = markMeta(k);
-    if (!isPassage(meta) || !meta.roomId) continue;
-    const ends = new Set([...rec.rooms, ...rec.to]);
-    ends.delete(meta.roomId);
-    for (const end of ends) addWay(meta.roomId, end, k, 'marker');
-    // and wherever the marker it has been called the same thing as comes out
-    for (const twin of rec.same) {
-      if (!ANN.marks[twin]) continue;
-      addWay(meta.roomId, markMeta(twin).roomId, k, 'marker');
-    }
-  }
-
-  // -- outlines that run together ----------------------------------------
-  for (const [k, list] of OPEN_EDGES) {
-    for (const other of list) addWay(splitKey(k).id, other, k, 'open');
-  }
-
-  // -- what the book describes where nothing is marked yet ---------------
-  for (const r of DATA.rooms) {
-    for (const f of featuresOf(r.id)) {
-      if (!isPassage({ type: f.type, label: f.label })) continue;
-      if (hasMark('feat', f.id)) continue;          // placed: the marker speaks for it
-      for (const end of textTargets(f.label, r.id)) addWay(r.id, end, f.id, 'text');
-    }
-  }
-
-  // -- and what you said yourself ----------------------------------------
-  for (const e of edits('conn')) addWay(...pairOf(e), null, 'hand');
-
-  // entry id -> the entries any placement of it has been tied to
-  const twinsOf = new Map();
-  for (const [k, rec] of LINKS) {
-    if (splitKey(k).kind !== 'feat' || !rec.same.length) continue;
-    const id = splitKey(k).id;
-    if (!twinsOf.has(id)) twinsOf.set(id, new Set());
-    for (const t of rec.same) twinsOf.get(id).add(splitKey(t).id);
-  }
-
-  // -- minus the ones you struck out -------------------------------------
-  const cut = new Set(edits('notConn'));
-  for (const [room, list] of WAYS) {
-    let out = list.filter(w => !cut.has(pairKey(room, w.to)));
-    // a room the map already accounts for does not also need the book's guess
-    const drawn = new Set(out.filter(w => w.how !== 'text').map(w => w.to));
-    out = out.filter(w => w.how !== 'text' || !drawn.has(w.to));
-    // a door marked from both sides is one door, not two ways out: where two
-    // entries for the same destination have been tied together as the same
-    // thing, keep the nearer one -- this room's own entry. Tied at the level
-    // of the entry, not the placement: a row stands for a whole entry however
-    // many times it is placed, so it is enough that any placement of the one
-    // is a twin of any placement of the other
-    out = out.filter((w, i) => {
-      if (w.how !== 'marker') return true;
-      const tied = twinsOf.get(splitKey(w.via).id);
-      if (!tied) return true;
-      return !out.some((o, j) => {
-        if (o === w || o.how !== 'marker' || o.to !== w.to) return false;
-        if (!tied.has(splitKey(o.via).id)) return false;
-        const oHome = markMeta(o.via).roomId === room;
-        const wHome = markMeta(w.via).roomId === room;
-        return oHome !== wHome ? oHome : j < i;
-      });
-    });
-    out.sort((a, b) => a.to.localeCompare(b.to, undefined, { numeric: true })
-                    || String(a.via).localeCompare(String(b.via)));
-    WAYS.set(room, out);
-  }
-
-  // -- hang the answer on every outline of the room ----------------------
-  for (const [k, rec] of LINKS) {
-    const sk = splitKey(k);
-    if (sk.kind !== 'room') continue;
-    rec.ways = waysOf(sk.id);
-    rec.to = [...new Set(rec.ways.map(w => w.to))].sort();
-  }
-}
-
-/**
- * What each marker reaches, for the chips beside it here and the badges in the
- * reader. Its own room is left out; a pair you have said does not connect is
- * left out too, so striking out a connection clears the chips as well as the
- * ways rather than leaving the marker still advertising it.
- */
-function buildReach() {
-  for (const [k, rec] of LINKS) {
-    if (splitKey(k).kind !== 'feat') continue;
-    const home = markMeta(k).roomId;
-    const out = new Set([...rec.rooms, ...rec.to]);
-    for (const twin of rec.same) {
-      if (!ANN.marks[twin]) continue;
-      out.add(markMeta(twin).roomId);
-      for (const r of (LINKS.get(twin)?.rooms || [])) out.add(r);
-    }
-    out.delete(home);
-    rec.reach = [...out]
-      .filter(id => ROOMS.has(id) && !hasEdit('notConn', home, id))
-      .sort();
-  }
-}
-
-/** How a room-to-room connection came about, for the panel to show. */
-const WAY_SOURCE = { marker: 'auto', open: 'auto', text: 'text', hand: 'hand' };
-
-/** Make or break one link. `which` is 'same' or 'conn'. */
-function setLink(which, a, b, on) {
-  if (a === b) return;
-  const negative = which === 'same' ? 'notSame' : 'notConn';
-  const key = pairKey(a, b);
-  if (on === linkedNow(which, a, b)) return;                 // already how you want it
-  pushHistory((on ? 'link ' : 'unlink ') + (which === 'same' ? 'markers' : 'rooms'));
-  const drop = (list, k) => { const i = list.indexOf(k); if (i >= 0) list.splice(i, 1); };
-  if (on) {
-    drop(ANN.linkEdits[negative], key);
-    if (!ANN.linkEdits[which].includes(key)) ANN.linkEdits[which].push(key);
-    relink();
-  } else {
-    drop(ANN.linkEdits[which], key);
-    relink();
-    // if it is still standing, something else derives it: say you do not want it
-    if (linkedNow(which, a, b)) {
-      if (!ANN.linkEdits[negative].includes(key)) ANN.linkEdits[negative].push(key);
-      relink();
-    }
-  }
-  save(); renderFeatures(); renderLinks(); needsDraw = true;
-}
-
-/** Take back a strike-out. If the app had worked the link out for itself, that
- *  is enough and it comes back as its own; if it had not, it becomes yours. */
-function restoreLink(which, a, b) {
-  const negative = which === 'same' ? 'notSame' : 'notConn';
-  const key = pairKey(a, b);
-  if (!ANN.linkEdits[negative].includes(key)) return;
-  pushHistory('restore ' + (which === 'same' ? 'link' : 'connection'));
-  ANN.linkEdits[negative].splice(ANN.linkEdits[negative].indexOf(key), 1);
-  relink();
-  if (!linkedNow(which, a, b)) {
-    ANN.linkEdits[which].push(key);
-    relink();
-  }
-  save(); renderFeatures(); renderLinks(); needsDraw = true;
-}
-
-/** Struck-out pairs that mention this room or mark, so they can be put back. */
-function struckOut(which, id) {
-  const negative = which === 'same' ? 'notSame' : 'notConn';
-  return edits(negative)
-    .map(pairOf)
-    .filter(([a, b]) => a === id || b === id)
-    .map(([a, b]) => (a === id ? b : a));
-}
-
-/** Forget every hand-made link that mentions a mark, for when the mark goes. */
-function forgetLinksFor(keys) {
-  const gone = new Set(keys);
-  for (const which of ['same', 'notSame']) {
-    ANN.linkEdits[which] = edits(which)
-      .filter(s => !pairOf(s).some(k => gone.has(k)));
-  }
-}
-
-/** Recompute every link. Cheap enough to run after any edit. */
-function relink() {
-  LINKS.clear();
-  OPEN_EDGES.clear();
-  const byLevel = new Map();
-  for (const [k, m] of Object.entries(ANN.marks)) {
-    if (!m || !m.shape) continue;
-    if (!byLevel.has(m.levelId)) byLevel.set(m.levelId, []);
-    byLevel.get(m.levelId).push([k, m]);
-  }
-  for (const [levelId, entries] of byLevel) {
-    const g = (LEVELS.get(levelId)?.grid?.size) || 90;
-    const index = entries.filter(([k, m]) => k.startsWith('room:') && isArea(m.shape))
-                         .map(([k, m]) => ({ id: splitKey(k).id, shape: m.shape, bb: areaBBox(m.shape) }));
-    const feats = entries.filter(([k]) => k.startsWith('feat:'));
-    // buckets a grid square wide, so a mark only meets its neighbours
-    const bucket = new Map();
-    const cellOf = pt => Math.round(pt[0] / g) + ':' + Math.round(pt[1] / g);
-    const anchorOf = m => {
-      const l = segLike(m.shape);
-      if (l) return l.c;
-      if (m.shape && m.shape.type === 'point') return [m.shape.x, m.shape.y];
-      return shapeCenter(m.shape);
-    };
-    for (const [k, m] of feats) {
-      const a = anchorOf(m);
-      if (!a) continue;
-      const key = cellOf(a);
-      if (!bucket.has(key)) bucket.set(key, []);
-      bucket.get(key).push([k, m]);
-    }
-    const nearby = m => {
-      const a = anchorOf(m);
-      if (!a) return [];
-      const cx = Math.round(a[0] / g), cy = Math.round(a[1] / g);
-      const out = [];
-      for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
-        const b = bucket.get((cx + dx) + ':' + (cy + dy));
-        if (b) out.push(...b);
-      }
-      return out;
-    };
-    for (const [k, m] of entries) {
-      const sk = splitKey(k);
-      const meta = markMeta(k);
-      const rec = { same: [], rooms: [], to: [], levels: [] };
-      if (sk.kind === 'feat') {
-        rec.rooms = roomsTouching(m, index, g).sort();
-        rec.to = textTargets(meta.label, meta.roomId);
-        for (const [k2, m2] of nearby(m)) {
-          if (k2 === k) continue;
-          if (splitKey(k2).id === sk.id) continue;          // another placement of itself
-          if (markMeta(k2).type !== meta.type) continue;    // a door pairs with a door
-          if (sameSpot(m, m2, g)) rec.same.push(k2);
-        }
-        rec.same.sort();
-      } else if (sk.kind === 'room') {
-        rec.rooms = [sk.id];
-      }
-      LINKS.set(k, rec);
-    }
-    // an edge marked open is a way through as much as a door is; note which
-    // outline meets which, and let buildWays turn that into connections
-    for (const [k, m] of entries) {
-      if (splitKey(k).kind !== 'room' || !isArea(m.shape)) continue;
-      const me = splitKey(k).id;
-      const met = new Set();
-      for (const part of m.shape.parts) {
-        const r = part.ring;
-        for (let i = 0; i < r.length; i++) {
-          if (part.edges[i] !== OPEN) continue;
-          const a = r[i], b = r[(i + 1) % r.length];
-          const L = Math.hypot(b[0] - a[0], b[1] - a[1]);
-          if (L < 1) continue;
-          const nx = -(b[1] - a[1]) / L, ny = (b[0] - a[0]) / L;
-          const mx = (a[0] + b[0]) / 2, my = (a[1] + b[1]) / 2;
-          for (const d of [-0.35, 0.35]) {
-            for (const rid of roomsAtPoint(levelId, [mx + nx * g * d, my + ny * g * d], index)) {
-              if (rid !== me) met.add(rid);
-            }
-          }
-        }
-      }
-      if (met.size) OPEN_EDGES.set(k, [...met]);
-    }
-  }
-  applySameEdits();
-  buildWays();
-  buildReach();
-  // which sheets each entry is marked on
-  const sheets = new Map();
-  for (const k of Object.keys(ANN.marks)) {
-    const sk = splitKey(k);
-    const id = sk.kind + ':' + sk.id;
-    if (!sheets.has(id)) sheets.set(id, new Set());
-    sheets.get(id).add(sk.levelId);
-  }
-  for (const [k, rec] of LINKS) {
-    const sk = splitKey(k);
-    rec.levels = [...(sheets.get(sk.kind + ':' + sk.id) || [])].filter(l => l !== sk.levelId).sort();
-    const m = ANN.marks[k];
-    if (m) {
-      const any = rec.same.length || rec.rooms.length || rec.to.length
-               || rec.levels.length || (rec.ways && rec.ways.length)
-               || (rec.reach && rec.reach.length);
-      if (any) m.links = rec; else delete m.links;
-    }
-  }
-  return LINKS;
-}
-
-/** Everything this mark is tied to, as one flat list of room ids. */
-const linkedRooms = key => LINKS.get(key)?.reach || [];
-
-// ==================================================================
-//  sidebars
-// ==================================================================
 function renderRooms() {
   const list = $('#roomList');
   const q = S.search.trim().toLowerCase();
-  let html = '', shown = 0;
-  let doneCount = 0, totalRooms = 0;
+  let html = '', shown = 0, done = 0, total = 0;
 
   for (const lv of DATA.levels) {
-    const rooms = lv.rooms.map(id => ROOMS.get(id)).filter(Boolean);
+    const rooms = (lv.rooms || []).map(id => ROOMS.get(id)).filter(Boolean);
     let rows = '';
     for (const r of rooms) {
-      totalRooms++;
+      total++;
       const pr = roomProgress(r.id);
-      const complete = pr.area && pr.placed === pr.total;
-      if (complete) doneCount++;
+      const complete = pr.area && pr.placed === pr.total && !pr.loose;
+      if (complete) done++;
       if (S.onlyUnmarked && complete) continue;
       if (S.hideSubs && r.parent && !(q && r.id.toLowerCase().includes(q))) continue;
       if (q && !(r.id.toLowerCase().includes(q) || r.name.toLowerCase().includes(q)
@@ -1881,580 +1189,547 @@ function renderRooms() {
         <span class="${cls}"></span>
         <span class="rid">${esc(r.id)}</span>
         <span class="rname">${esc(r.name)}</span>
-        <span class="rcount">${pr.placed}/${pr.total}</span></div>`;
+        <span class="rcount"${pr.loose ? ' title="ways with one end still unsaid"' : ''}>${
+          pr.placed}/${pr.total}${pr.loose ? ' ·' + pr.loose + '?' : ''}</span></div>`;
     }
     if (rows) html += `<div class="levelHead">${esc(lv.name)}</div>` + rows;
   }
   list.innerHTML = html || '<div class="emptyNote">Nothing matches that search.</div>';
-  const pct = totalRooms ? Math.round(doneCount / totalRooms * 100) : 0;
-  $('#roomProgress').style.width = pct + '%';
-  $('#roomProgressText').textContent = `${doneCount} of ${totalRooms} areas fully marked · ${shown} shown`;
+  $('#roomProgress').style.width = (total ? Math.round(done / total * 100) : 0) + '%';
+  $('#roomProgressText').textContent =
+    `${done} of ${total} areas finished · ${shown} shown`;
 }
 
+// ==================================================================
+//  the room panel: what is on this sheet, and the ways off it
+// ==================================================================
 function buildTypeFilters() {
-  $('#typeFilters').innerHTML = TYPE_KEYS
-    .map(k => `<button data-type="${k}">${TYPES[k].ico} ${TYPES[k].label}</button>`).join('');
+  const keys = ['area', 'creature', 'item', 'trap', 'note', 'open', 'door', 'secret', 'barrier'];
+  $('#typeFilters').innerHTML = keys
+    .map(k => `<button data-type="${k}" title="${esc(TYPES[k].label)}">${TYPES[k].ico}</button>`).join('');
 }
 
-function renderFeatures() {
+function renderRoomPanel() {
   const titleEl = $('#featureTitle');
   const listEl = $('#featureList');
   const r = ROOMS.get(S.roomId);
   if (!r) {
     titleEl.textContent = 'No room selected';
-    listEl.innerHTML = '<div class="emptyNote">Pick a room on the left to see its doors and items.</div>';
+    listEl.innerHTML = '<div class="emptyNote">Pick a room on the left.</div>';
     $('#roomText').innerHTML = '';
-    renderLinks();
+    $('#alsoOn').innerHTML = '';
+    renderProps();
     return;
   }
   const pr = roomProgress(r.id);
-  titleEl.innerHTML = `${esc(r.id)}. ${esc(r.name)}<small>${esc(LEVELS.get(r.level)?.name || '')}
-    · ${pr.placed}/${pr.total} placed${pr.area ? ' · area marked' : ''}</small>`;
+  const lvName = (LEVELS.get(S.levelId) || {}).name || S.levelId;
+  titleEl.innerHTML = `${esc(r.id)}. ${esc(r.name)}<small>${esc(lvName)}
+    · ${pr.placed}/${pr.total} drawn${pr.area ? '' : ' · no outline yet'}${
+    pr.loose ? ' · ' + pr.loose + ' way' + (pr.loose > 1 ? 's' : '') + ' unfinished' : ''}</small>`;
   $('#markRoomBtn').textContent =
-    getMark(mid('room', r.id)) ? 'Re-mark on this map' : 'Mark room area';
+    areaObjectOf(r.id, S.levelId) ? 'Redraw room area' : 'Mark room area';
+
+  // edges of whatever is selected
   const et = edgeTarget();
   const ed = et ? areaEdges(et.shape) : [];
-  const iw = wallsOf(r.id).length;
-  $('#edgeTools').style.display = (ed.length || iw) ? 'flex' : 'none';
-  const bits = [];
+  $('#edgeTools').style.display = ed.length ? 'flex' : 'none';
   if (ed.length) {
     const walls = ed.filter(x => x.wall).length;
-    const who = et === getMark(mid('room', r.id)) ? 'outline' : (markMeta(S.sel)?.label || 'marker');
-    bits.push(`${who}: ${walls} wall${walls === 1 ? '' : 's'}, ${ed.length - walls} open`);
+    $('#edgeCount').textContent = `${walls} wall${walls === 1 ? '' : 's'}, ${ed.length - walls} open`;
   }
-  if (iw) bits.push(`${iw} inside`);
-  $('#edgeCount').textContent = bits.join(' · ');
-  const on = marksOf('room', r.id).map(([k]) => splitKey(k).levelId);
-  const also = [...new Set([...(r.alsoOn || []), ...on])].filter(l => l !== r.level);
-  const leads = [...new Set(marksOf('room', r.id).flatMap(([k]) => (LINKS.get(k)?.to) || []))].sort();
-  $('#alsoOn').innerHTML =
-    (also.length
-      ? 'Also on: ' + also.map(l => `<button data-golevel="${l}"${on.includes(l) ? ' class="on"' : ''}>${
-          esc(LEVELS.get(l)?.name || l)}</button>`).join('')
-      : '')
-    + (leads.length
-      ? `<span class="leadsTo">Leads to: ${leads.slice(0, 10).map(x =>
-          `<button class="linkChip" data-goroom="${esc(x)}">${esc(x)}</button>`).join('')}${
-          leads.length > 10 ? ` +${leads.length - 10}` : ''}</span>`
-      : '');
 
-  const feats = featuresOf(r.id);
+  // the other sheets this room is drawn on
+  const sheets = sheetsOf(r.id).filter(l => l !== S.levelId);
+  $('#alsoOn').innerHTML = sheets.length
+    ? 'Also on: ' + sheets
+        .sort((a, b) => levelElevation(b) - levelElevation(a))
+        .map(l => `<button data-golevel="${esc(l)}">${esc((LEVELS.get(l) || {}).name || l)}</button>`)
+        .join('')
+    : '';
+
   const filt = S.typeFilter;
   let html = '';
-  for (const f of feats) {
-    if (filt.size && !filt.has(f.type)) continue;
-    const t = TYPES[f.type] || TYPES.note;
-    const all = marksOf('feat', f.id);
-    const m = all.length;
-    const here = placementsOf(f.id).length;
-    const byLevel = [...new Set(all.map(([k]) => splitKey(k).levelId))]
-      .map(l => LEVELS.get(l)?.name || l).join(', ');
-    const isTarget = S.target && S.target.kind === 'feat' && S.target.id === f.id;
-    const ln = new Set();
-    all.forEach(([k]) => linkedRooms(k).forEach(x => ln.add(x)));
-    textTargets(f.label, r.id).forEach(x => ln.add(x));
-    const twin = all.some(([k]) => (LINKS.get(k)?.same || []).length);
-    const chips = [...ln].slice(0, 4).map(x =>
-      `<button class="linkChip" data-goroom="${esc(x)}" title="${esc(ROOMS.get(x)?.name || x)}">${esc(x)}</button>`).join('');
-    const hset = all.map(([k, mm]) => mm.height).find(h => h);
-    const hchip = hset ? `<span class="hChip" title="feet above the main floor">${esc(heightText(hset))}</span>` : '';
-    html += `<div class="featRow${isTarget ? ' sel' : ''}" data-feat="${esc(f.id)}">
-      <span class="ico" style="color:${t.color}">${t.ico}</span>
-      <span class="body"><span class="flabel">${esc(f.label)}</span>
-        ${f.note ? `<span class="fnote">${esc(f.note)}</span>` : ''}
-        ${chips || twin || hchip ? `<span class="flinks">${twin ? '<span class="twin" title="also marked on another room&#39;s list, at the same spot">⇄</span>' : ''}${chips}${hchip}</span>` : ''}</span>
-      <span class="fside">${m ? `<span class="placed" title="${m} placed on ${byLevel}">●${
-        m > 1 ? '<b>' + (here || m) + '</b>' : ''}</span>` : ''}
-        <button class="ren" data-ren="${esc(f.id)}" title="Rename (or click the name again)">✎</button>
-        <button class="x" data-del="${esc(f.id)}" title="Remove from list">×</button></span></div>`;
-  }
-  listEl.innerHTML = html || '<div class="emptyNote">No entries match the type filter. Use <b>+ Add</b> to create one.</div>';
+
+  const things = contentsOf(r.id, S.levelId);
+  const rows = things.filter(o => !filt.size || filt.has(o.type));
+  html += `<div class="groupHead">In this area <em>on ${esc(lvName)}</em></div>`;
+  html += rows.length ? rows.map(o => objectRow(o)).join('')
+        : '<div class="emptyNote sm">Nothing here yet. <b>+ Add</b> makes one.</div>';
+
+  const ways = connectionsOf(r.id, S.levelId).filter(c => !filt.size || filt.has(c.type));
+  html += `<div class="groupHead">Ways in and out <em>of ${esc(lvName)}</em></div>`;
+  html += ways.length ? ways.map(c => portalRow(c, r.id)).join('')
+        : '<div class="emptyNote sm">No way off this sheet yet.</div>';
+
+  listEl.innerHTML = html;
   $('#roomText').innerHTML = mdToHtml(r.text || '');
   renderHeight();
-  renderLinks();
+  renderProps();
 }
 
-// ------------------------------------------------------------------ links panel
-// Everything the geometry worked out, with a way to disagree with it: one list
-// for other placements of the same physical thing, one for the areas a room
-// leads to. Rows say where each link came from, so striking one out is an
-// informed decision rather than a guess.
-const SRC_TEXT = {
-  hand: ['by hand', 'You made this link'],
-  auto: ['found', 'Worked out from the marks on the map'],
-  text: ['from text', 'The module says so, but nothing is marked on the map yet'],
-};
-
-/** A way in plain words: what makes it a way, and the marker behind it. */
-function wayEvidence(way) {
-  if (way.how === 'hand') return { icon: TYPES.room, text: 'you connected these', key: null };
-  if (way.how === 'open') return { icon: TYPES.room, text: 'the outlines run together', key: null };
-  if (way.how === 'text') {
-    const roomId = String(way.via || '').split('::')[0];
-    const f = featuresOf(roomId).find(x => x.id === way.via);
-    return { icon: TYPES[f?.type] || TYPES.note,
-             text: (f ? f.label : way.via) + ' \u2014 in the text, not marked yet', key: null };
-  }
-  const meta = markMeta(way.via);
-  return { icon: TYPES[meta.type] || TYPES.note,
-           text: meta.label + (meta.roomId ? ' \u00b7 ' + meta.roomId + "'s list" : ''),
-           key: ANN.marks[way.via] ? way.via : null };
+function objectRow(o) {
+  const t = TYPES[o.type] || TYPES.note;
+  const bits = [];
+  if (o.height && !o.height.assumed) bits.push(heightText(o.height));
+  if (o.light) bits.push(`${o.light.bright}/${o.light.dim} ft`);
+  if (o.count > 1) bits.push('●' + o.count);
+  if (!o.placed) bits.push('not drawn');
+  return `<div class="featRow${o.id === S.markerId ? ' sel' : ''}${o.placed ? '' : ' faint'}"
+      data-marker="${esc(o.id)}">
+    <span class="ico" style="color:${t.color}">${t.ico}</span>
+    <span class="body"><span class="flabel">${esc(o.name)}</span>
+      ${o.description ? `<span class="fnote">${esc(o.description)}</span>` : ''}</span>
+    <span class="fside"><span class="placed">${esc(bits.join(' · '))}</span>
+      <button class="x" data-delmarker="${esc(o.id)}" title="Delete this marker">×</button></span></div>`;
 }
 
-function srcChip(src) {
-  const [txt, tip] = SRC_TEXT[src] || ['', ''];
-  return txt ? `<span class="src ${src}" title="${esc(tip)}">${esc(txt)}</span>` : '';
+function portalRow(c, roomId) {
+  const t = TYPES[c.type] || TYPES.note;
+  const room = ROOMS.get(c.to);
+  const g = c.go || {};
+  const arrow = g.dir === 'up' ? '↑' : g.dir === 'down' ? '↓' : '→';
+  const rise = g.dir && Math.abs(g.rise) >= 5 ? `${g.dir} ${Math.abs(g.rise)} ft` : '';
+  const where = c.to
+    ? `<button class="linkChip" data-goroom="${esc(c.to)}" title="${esc((room && room.name) || '')}">${esc(c.to)}</button>`
+    : '<span class="unsaid">far side not said</span>';
+  return `<div class="featRow${c.id === S.markerId ? ' sel' : ''}${c.to ? '' : ' warn'}"
+      data-marker="${esc(c.id)}">
+    <span class="ico" style="color:${t.color}">${t.ico}</span>
+    <span class="body"><span class="flabel">${esc(c.label || t.label)}</span>
+      <span class="fnote">${esc(c.how)}${c.state ? ' · ' + esc(c.state) : ''}${
+        c.unmarked ? ' · not drawn' : ''}</span>
+      <span class="flinks">${arrow} ${where}${rise ? `<span class="hChip">${esc(rise)}</span>` : ''}</span></span>
+    <span class="fside"><button class="x" data-delmarker="${esc(c.id)}" title="Delete this way">×</button></span></div>`;
 }
 
-/** The one marker the same-as list works on: a placed marker, not a room. */
-function linkSubject() {
-  if (S.sel && ANN.marks[S.sel] && splitKey(S.sel).kind === 'feat') return S.sel;
-  return null;
-}
-
-function renderLinks() {
-  const el = $('#linkPanel');
-  if (!el) return;
-  const subject = linkSubject();
-  let html = '', tally = 0;
-
-  // ---- other placements of the same thing -------------------------------
-  html += '<div class="linkGroup"><h4>Same thing as';
-  if (subject) {
-    const sk = splitKey(subject);
-    const places = placementsOf(sk.id, sk.levelId);
-    html += ` <small>&mdash; ${esc(markMeta(subject).label)}${
-      places.length > 1 ? `, placement <b>#${sk.inst}</b> of ${places.length} on this sheet` : ''}</small>`;
-  }
-  html += '</h4>';
-  if (!subject) {
-    html += '<p class="linkNote">Select a placed marker &mdash; click it on the map, or pick it '
-          + 'from the list above &mdash; to say which other markers are the same door, stair or shaft.</p>';
-  } else {
-    const partners = (LINKS.get(subject)?.same || []).filter(k => ANN.marks[k]);
-    tally += partners.length;
-    for (const k of partners) {
-      const m2 = markMeta(k), sk = splitKey(k);
-      const t = TYPES[m2.type] || TYPES.note;
-      html += `<div class="linkRow">
-        <span class="ico" style="color:${t.color}">${t.ico}</span>
-        <span class="what"><b>${esc(m2.label)}</b><span>${esc(m2.roomId)} &middot; ${
-          esc(LEVELS.get(sk.levelId)?.name || sk.levelId)}${sk.inst > 1 ? ' &middot; #' + sk.inst : ''}</span></span>
-        ${srcChip(linkSource('same', subject, k))}
-        <button class="go" data-gomark="${esc(k)}" title="Show it on its own sheet">show</button>
-        <button class="cut" data-cutsame="${esc(k)}" title="Not the same thing">&times;</button></div>`;
-    }
-    if (!partners.length) html += '<p class="linkNote">Nothing else is marked at this spot.</p>';
-    // the other placements of the same entry, and whether each has a twin yet:
-    // a link belongs to one placement, so five windows want five links
-    {
-      const sk = splitKey(subject);
-      const places = placementsOf(sk.id, sk.levelId).filter(([k]) => k !== subject);
-      if (places.length) {
-        html += '<p class="linkNote placements">Other placements on this sheet: ' + places.map(([k]) => {
-          const n = (LINKS.get(k)?.same || []).length;
-          return `<button class="placeChip${n ? ' tied' : ''}" data-gomark="${esc(k)}" title="${
-            n ? `${n} twin${n === 1 ? '' : 's'}` : 'no twin yet'}">#${splitKey(k).inst}${n ? ' \u21c4' : ''}</button>`;
-        }).join(' ') + '</p>';
-      }
-    }
-    for (const k of struckOut('same', subject)) {
-      const m2 = markMeta(k);
-      html += `<div class="linkRow struck">
-        <span class="ico">&empty;</span>
-        <span class="what"><b>${esc(m2.label)}</b><span>${esc(m2.roomId)} &middot; you said this is not the same thing</span></span>
-        <button class="go" data-undosame="${esc(k)}" title="Put this link back">restore</button></div>`;
-    }
-    const arming = S.picking && S.picking.mode === 'same';
-    html += `<div class="linkAdd">
-      <button id="pickSame" class="${arming ? 'arming' : ''}">${
-        arming ? 'Click a marker\u2026 (Esc cancels)' : '+ Same as another marker\u2026'}</button></div>
-      <p class="linkNote">Switch sheets while picking to tie a stair on one floor to the same stair
-        on the next; the rooms at both ends are then joined too.</p>`;
-  }
-  html += '</div>';
-
-  // ---- what this room leads to ------------------------------------------
-  html += '<div class="linkGroup"><h4>Connects to';
-  if (S.roomId) html += ` <small>&mdash; ${esc(S.roomId)}</small>`;
-  html += '</h4>';
-  if (!S.roomId) {
-    html += '<p class="linkNote">Pick a room on the left to see and edit where it leads.</p>';
-  } else {
-    const ways = waysOf(S.roomId);
-    tally += new Set(ways.map(w => w.to)).size;
-    for (const w of ways) {
-      const r = ROOMS.get(w.to);
-      const ev = wayEvidence(w);
-      html += `<div class="linkRow">
-        <span class="ico" style="color:${ev.icon.color}">${ev.icon.ico}</span>
-        <span class="what"><b>${esc(w.to)}${r ? '. ' + esc(r.name) : ''}</b>
-          <span>${esc(ev.text)}</span></span>
-        ${srcChip(WAY_SOURCE[w.how] || 'auto')}
-        ${ev.key ? `<button class="go" data-gomark="${esc(ev.key)}" title="Show the marker behind this">via</button>` : ''}
-        <button class="go" data-goroom="${esc(w.to)}" title="Go to it">show</button>
-        <button class="cut" data-cutconn="${esc(w.to)}" title="${
-          esc(S.roomId + ' and ' + w.to + ' do not connect: this drops every way between them')
-        }">&times;</button></div>`;
-    }
-    const struck = struckOut('conn', S.roomId);
-    if (!ways.length && !struck.length) {
-      html += '<p class="linkNote">Nothing leads out of here yet.</p>';
-    }
-    for (const id of struck) {
-      const r = ROOMS.get(id);
-      html += `<div class="linkRow struck">
-        <span class="ico">&empty;</span>
-        <span class="what"><b>${esc(id)}${r ? '. ' + esc(r.name) : ''}</b>
-          <span>you said these do not connect</span></span>
-        <button class="go" data-undoconn="${esc(id)}" title="Put this connection back">restore</button></div>`;
-    }
-    const arming = S.picking && S.picking.mode === 'conn';
-    html += `<div class="linkAdd">
-      <button id="addConn">+ Connect to an area\u2026</button>
-      <button id="pickConn" class="${arming ? 'arming' : ''}">${
-        arming ? 'Click a room\u2026 (Esc cancels)' : 'Pick on the map'}</button></div>`;
-  }
-  html += '</div>';
-
-  el.innerHTML = html;
-  $('#linkCount').textContent = tally ? String(tally) : '';
-}
-
-/** Go to a mark wherever it is, changing sheets if that is where it lives. */
-async function showMark(key) {
-  const m = ANN.marks[key];
-  if (!m) return;
-  const sk = splitKey(key);
-  if (sk.levelId && sk.levelId !== S.levelId) await setLevel(sk.levelId);
-  S.sel = key;
-  if (sk.kind === 'room') { S.roomId = sk.id; S.target = { kind: 'room', id: sk.id }; }
-  else { S.roomId = sk.id.split('::')[0]; S.target = { kind: 'feat', id: sk.id }; }
-  renderRooms(); renderFeatures();
-  centerOn(m.shape);
-  needsDraw = true;
-}
-
-function openConnDialog() {
-  if (!S.roomId) { hint('Pick a room first.'); return; }
-  $('#connFrom').textContent = S.roomId;
-  $('#connSearch').value = '';
-  $('#connRooms').innerHTML = DATA.rooms
-    .map(r => `<option value="${esc(r.id)}">${esc(r.name)}</option>`).join('');
-  renderConnHits();
-  $('#connDialog').showModal();
-  $('#connSearch').focus();
-}
-
-function renderConnHits() {
-  const me = S.roomId;
-  if (!me) return;
-  const q = ($('#connSearch').value || '').trim().toLowerCase();
-  const linked = new Set(marksOf('room', me).flatMap(([k]) => LINKS.get(k)?.to || []));
-  const hits = DATA.rooms
-    .filter(r => r.id !== me &&
-      (!q || r.id.toLowerCase().includes(q) || r.name.toLowerCase().includes(q)))
-    .slice(0, 80);
-  $('#connHits').innerHTML = hits.map(r => {
-    const on = linked.has(r.id);
-    return `<button class="hit${on ? ' on' : ''}" data-connto="${esc(r.id)}"${on ? ' disabled' : ''}>
-      <b>${esc(r.id)}</b><span>${esc(r.name)}</span>
-      <em>${on ? 'already connected' : esc(LEVELS.get(r.level)?.name || '')}</em></button>`;
-  }).join('') || '<p class="linkNote">Nothing matches that.</p>';
-}
-
-// ------------------------------------------------------------------ picking
-/** Arm the map: the next click names the other end of a link. */
-function startPick(mode) {
-  if (mode === 'same' && !linkSubject()) {
-    hint('Select a placed marker first, then link it to another one.');
+// ==================================================================
+//  the properties panel
+// ==================================================================
+// What the old build called Links. A portal's two ends are the thing most
+// worth being able to correct, so they sit here with everything else the
+// selected marker owns.
+function renderProps() {
+  const box = $('#linkPanel');
+  const m = marker(S.markerId);
+  $('#linkCount').textContent = '';
+  if (!m) {
+    box.innerHTML = '<div class="emptyNote sm">Pick something in the middle column, '
+      + 'or click it on the map, to edit it here.</div>';
     return;
   }
-  if (mode === 'conn' && !S.roomId) { hint('Pick a room first.'); return; }
-  S.picking = { mode, from: mode === 'same' ? linkSubject() : S.roomId };
-  canvas.classList.add('picking');
-  $('#linkSplit').classList.add('open');
-  hint(mode === 'same'
-    ? '<b>Linking.</b> Click the marker that is the same physical thing. You can change '
-      + 'sheets first &mdash; that is how a stair on one floor meets itself on the next. <b>Esc</b> cancels.'
-    : '<b>Connecting.</b> Click any room outline to say it leads to and from '
-      + `<b>${esc(S.roomId)}</b>. <b>Esc</b> cancels.`);
-  renderLinks(); needsDraw = true;
+  const isPort = m.kind === 'portal';
+  $('#linkCount').textContent = isPort ? 'portal' : (m.objectType || '');
+  const shapesHere = (m.shapes || []).filter(s => s.level === S.levelId).length;
+  const shapesElse = (m.shapes || []).length - shapesHere;
+
+  let html = `<div class="propHead">${esc(nameOf(m, S.roomId) || '(unnamed)')}</div>`;
+  html += `<div class="propNote">${shapesHere} drawn on this sheet${
+    shapesElse ? `, ${shapesElse} on another` : ''}.</div>`;
+
+  if (!isPort) {
+    html += field('Name', 'text', 'name', m.name || '');
+    html += field('Description', 'area', 'description', m.description || '');
+    html += `<label class="propRow">Kind<select data-prop="objectType">${
+      ['area', 'creature', 'item', 'trap', 'note']
+        .map(k => `<option value="${k}"${m.objectType === k ? ' selected' : ''}>${TYPES[k].label}</option>`)
+        .join('')}</select></label>`;
+    html += `<label class="propRow">Room<select data-prop="room">${
+      [...ROOMS.keys()].map(id =>
+        `<option value="${esc(id)}"${m.room === id ? ' selected' : ''}>${esc(id)} ${esc(ROOMS.get(id).name)}</option>`)
+        .join('')}</select></label>`;
+  } else {
+    html += `<label class="propRow">Passage<select data-prop="passage">${
+      [['open', 'Open — cannot be shut'], ['door', 'Door — opens and shuts'],
+       ['barrier', 'Barrier — never opens']]
+        .map(([k, t]) => `<option value="${k}"${m.passage === k ? ' selected' : ''}>${t}</option>`)
+        .join('')}</select></label>`;
+    html += `<label class="propRow">State<select data-prop="state">${
+      ['open', 'closed', 'locked']
+        .map(k => `<option value="${k}"${m.state === k ? ' selected' : ''}${
+          (k !== 'open' && m.passage === 'open') || (k === 'locked' && !m.lockable) ? ' disabled' : ''
+        }>${k}</option>`).join('')}</select></label>`;
+    html += `<div class="propRow flags">
+      <label class="chk"><input type="checkbox" data-prop="lockable"${m.lockable ? ' checked' : ''}${
+        m.passage !== 'door' ? ' disabled' : ''}> lockable</label>
+      <label class="chk"><input type="checkbox" data-prop="transparent"${m.transparent ? ' checked' : ''}> see-through</label>
+      <label class="chk"><input type="checkbox" data-prop="secret"${m.secret ? ' checked' : ''}> secret</label>
+    </div>`;
+    html += '<div class="propHead sub">The two ends</div>';
+    m.sides.forEach((side, i) => {
+      const o = marker(side.marker);
+      const room = o ? ROOMS.get(o.room) : null;
+      html += `<div class="sideBox${o ? '' : ' warn'}">
+        <div class="sideWho">${o
+          ? `<b>${esc(o.room)}</b> ${esc((room && room.name) || '')}
+             <small>${esc((LEVELS.get(objectLevel(o)) || {}).name || 'not drawn')}</small>`
+          : '<b>Not said yet</b> <small>outside, or still to name</small>'}
+          <button class="ghost xs" data-pickside="${i}">${o ? 'change' : 'set'}</button>
+          ${o ? `<button class="ghost xs" data-clearside="${i}">clear</button>` : ''}</div>
+        <input class="sideName" data-side="${i}" data-sidefield="name"
+               value="${esc(side.name || '')}" placeholder="What it is called from this side">
+        <textarea class="sideNote" rows="2" data-side="${i}" data-sidefield="description"
+               placeholder="How it looks from this side">${esc(side.description || '')}</textarea>
+      </div>`;
+    });
+  }
+
+  html += `<div class="propRow lightRow">Light
+    <input type="number" data-prop="light.bright" step="5" placeholder="bright"
+           value="${m.light ? m.light.bright : ''}" style="width:68px">
+    <input type="number" data-prop="light.dim" step="5" placeholder="dim"
+           value="${m.light ? m.light.dim : ''}" style="width:68px"> ft</div>`;
+  box.innerHTML = html;
 }
 
-function cancelPick(quiet) {
-  if (!S.picking) return;
-  S.picking = null;
-  canvas.classList.remove('picking');
-  if (!quiet) hint('Cancelled.');
-  renderLinks(); needsDraw = true;
-}
+const field = (label, kind, prop, value) => kind === 'area'
+  ? `<label class="propRow col">${label}<textarea rows="2" data-prop="${prop}">${esc(value)}</textarea></label>`
+  : `<label class="propRow">${label}<input type="text" data-prop="${prop}" value="${esc(value)}"></label>`;
 
-/** A click on the map while armed. Returns true if it was consumed. */
-function pickAt(wp) {
-  const pk = S.picking;
-  if (!pk) return false;
-  const tol = 6 / S.view.scale;
-  const wantRoom = pk.mode === 'conn';
-  const hits = marksOnLevel()
-    .filter(([k, m]) => splitKey(k).kind === (wantRoom ? 'room' : 'feat')
-                     && hitShape(m.shape, wp, tol));
-  // rooms nest, so the smallest outline under the cursor is the one you meant;
-  // among markers a point or a doorway beats the area it sits in
-  const size = m => (isArea(m.shape)
-    ? (bb => (bb.x1 - bb.x0) * (bb.y1 - bb.y0))(areaBBox(m.shape))
-    : 0);
-  hits.sort((a, b) => size(a[1]) - size(b[1]));
-  const hit = hits[0];
-  if (!hit) {
-    hint(wantRoom ? 'No room outline there. Click inside one, or <b>Esc</b> to stop.'
-                  : 'No marker there. Click one, or <b>Esc</b> to stop.');
-    return true;
-  }
-  const [key] = hit;
-  if (wantRoom) {
-    const id = splitKey(key).id;
-    if (id === pk.from) { hint('That is the same room. Pick a different one.'); return true; }
-    setLink('conn', pk.from, id, true);
-    hint(`<b>${esc(pk.from)}</b> now connects to <b>${esc(id)}</b>. `
-       + 'Keep clicking to add more, <b>Esc</b> to stop.');
-    return true;
-  }
-  if (key === pk.from) { hint('That is the marker you started from.'); return true; }
-  if (splitKey(key).id === splitKey(pk.from).id) {
-    hint('That is another placement of the same entry, which is already understood.');
-    return true;
-  }
-  const a = markMeta(pk.from), b = markMeta(key);
-  setLink('same', pk.from, key, true);
-  hint(`<b>${esc(a.label)}</b> and <b>${esc(b.label)}</b> are now the same thing`
-     + (a.type !== b.type ? ` (a ${esc(a.type)} and a ${esc(b.type)}, which is unusual but allowed)` : '')
-     + '. Keep clicking to add more, <b>Esc</b> to stop.');
-  return true;
-}
-
-async function selectRoom(id) {
+// ==================================================================
+//  selection
+// ==================================================================
+function selectRoom(id, opts) {
+  if (!ROOMS.has(id)) return;
   S.roomId = id;
-  const r = ROOMS.get(id);
-  S.target = { kind: 'room', id };
-  const existing = marksOf('room', id);
-  // prefer a mark on the level already showing, else follow the first one
-  let go = existing.find(([k]) => splitKey(k).levelId === S.levelId);
-  if (!go && existing.length) {
-    await setLevel(splitKey(existing[0][0]).levelId);
-    go = existing[0];
-  } else if (!existing.length && r.level !== S.levelId) {
-    await setLevel(r.level);
+  localStorage.setItem('cr.room', id);
+  // follow the room to a sheet it is actually drawn on
+  const sheets = sheetsOf(id);
+  const go = sheets.includes(S.levelId) ? S.levelId : (homeSheet(id) || ROOMS.get(id).level);
+  const after = () => {
+    S.markerId = areaObjectOf(id, S.levelId) || null;
+    S.sel = null;
+    renderRooms(); renderRoomPanel();
+    if (!opts || !opts.keepView) centerOnRoom(id);
+    needsDraw = true;
+  };
+  if (go !== S.levelId) setLevel(go).then(after); else after();
+}
+
+function selectMarker(id, opts) {
+  const m = marker(id);
+  if (!m) return;
+  S.markerId = id;
+  const rooms = roomsOf(m);
+  if (rooms.length && !rooms.includes(S.roomId)) {
+    S.roomId = rooms[0];
+    localStorage.setItem('cr.room', S.roomId);
+    renderRooms();
   }
-  S.sel = mid('room', id);
-  renderRooms(); renderFeatures();
-  if (go) { centerOn(go[1].shape); hint(''); }   // leave the current tool alone
-  else {
-    setTool(TYPES.room.shape);
-    hint(`<b>${esc(id)}. ${esc(r.name)}</b> — drag a rectangle over the room, or press <b>P</b> for a polygon.`);
-  }
+  const it = firstItemOn(id, S.levelId);
+  S.sel = it ? it.key : null;
+  setToolFor(m);
+  renderRoomPanel();
+  if (opts && opts.center && it) centerOn(it.shape);
   needsDraw = true;
 }
 
-async function selectFeature(fid) {
-  const roomId = fid.split('::')[0];
-  if (roomId !== S.roomId) S.roomId = roomId;
-  const f = featuresOf(roomId).find(x => x.id === fid);
-  S.target = { kind: 'feat', id: fid };
-  const existing = marksOf('feat', fid);
-  let here = placementsOf(fid);
-  if (!here.length && existing.length) {
-    await setLevel(splitKey(existing[0][0]).levelId);
-    here = placementsOf(fid);
-  }
-  const t = TYPES[f?.type] || TYPES.note;
-  setTool(t.shape);                               // ready to add another
-  S.sel = here.length ? here[0][0] : null;
-  if (here.length) {
-    centerOn(here[0][1].shape);
-    hint(`<b>${esc(f.label)}</b> &mdash; ${here.length} placed. `
-       + 'Draw again to add another; Select then Delete removes one.');
-  } else {
-    hint(t.shape === 'seg'
-      ? `<b>${esc(f.label)}</b> — drag across the opening. Draw again for a second one.`
-      : t.shape === 'point'
-        ? `<b>${esc(f.label)}</b> — click each spot; place as many as you like.`
-        : `<b>${esc(f.label)}</b> — drag a box around it.`);
-  }
-  renderRooms(); renderFeatures(); needsDraw = true;
-}
-
-/** Swap a row's label for an input, in place. */
-function startRename(fid) {
-  const rows = [...document.querySelectorAll(".featRow")];
-  const row = rows.find(r => r.dataset.feat === fid);
-  if (!row) return;
-  const span = row.querySelector('.flabel');
-  const old = span.textContent;
-  const input = document.createElement('input');
-  input.type = 'text'; input.className = 'renameBox'; input.value = old;
-  span.replaceWith(input);
-  input.focus(); input.select();
-  let done = false;
-  const finish = commit => {
-    if (done) return;
-    done = true;
-    const v = input.value;
-    if (commit) renameFeature(fid, v); else renderFeatures();
-  };
-  input.onkeydown = ev => {
-    ev.stopPropagation();
-    if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
-    if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
-  };
-  input.onblur = () => finish(true);
-  input.onclick = ev => ev.stopPropagation();
-}
-
-/** The area the edge tools act on: whatever is selected, else the room. */
-function edgeTarget() {
-  const sel = S.sel && getMark(S.sel);
-  if (sel && isArea(sel.shape)) return sel;
-  const rm = S.roomId && getMark(mid('room', S.roomId));
-  return rm && isArea(rm.shape) ? rm : null;
-}
-
-function setAllEdges(v) {
-  const m = edgeTarget();
-  if (!m) { hint('Mark an area first, then set its edges.'); return; }
-  pushHistory(v === WALL ? 'all edges to wall' : 'all edges to open');
-  for (const part of m.shape.parts) part.edges = part.edges.map(() => v);
-  geomVersion++; save(); renderFeatures(); needsDraw = true;
-  hint(v === WALL ? 'Every edge of this outline is now a wall.'
-                  : 'Every edge of this outline is now an open boundary.');
+/** Picking a thing sets the tool its shape is usually drawn with. */
+function setToolFor(m) {
+  if (S.tool === 'edges' || S.tool === 'select') return;
+  const want = m.kind === 'portal'
+    ? (m.passage === 'open' ? 'rect' : 'seg')
+    : (m.objectType === 'area' ? 'rect' : 'point');
+  setTool(want);
 }
 
 function centerOn(sh) {
   const pts = shapePoints(sh);
   if (!pts.length) return;
-  const c = centroid(pts);
   const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
-  const w = Math.max(40, Math.max(...xs) - Math.min(...xs));
-  const h = Math.max(40, Math.max(...ys) - Math.min(...ys));
-  const want = Math.min(cw() / (w * 3), chh() / (h * 3));
-  if (S.view.scale < want * 0.35 || S.view.scale > want * 6) S.view.scale = Math.min(3, want);
-  S.view.tx = cw() / 2 - c[0] * S.view.scale;
-  S.view.ty = chh() / 2 - c[1] * S.view.scale;
+  const cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+  const cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+  S.view.tx = cw() / 2 - cx * S.view.scale;
+  S.view.ty = chh() / 2 - cy * S.view.scale;
   needsDraw = true;
 }
 
+function centerOnRoom(id) {
+  const it = firstItemOn(areaObjectOf(id, S.levelId), S.levelId);
+  if (it) centerOn(it.shape);
+}
+
+// ------------------------------------------------------------------ sides
+// Setting a portal's far end means picking one thing out of a map where
+// things sit on top of one another: a door is inside a room, which is beside
+// another room, and the gate mechanism is inside the courtyard. So the picker
+// does not guess. It gathers everything under the cursor, smallest first,
+// shows you which one it is about to take and what the others are, and lets
+// you step through them with Tab before you commit.
+//
+// Any object may be an end, not only a room outline. A place the book never
+// gave a room of its own -- the inside of a gate tower, say -- is often
+// marked as an item, and a door has to be able to lead there.
+
+/**
+ * Everything under the cursor that could be an end, nearest thing first.
+ *
+ * The far end of a way cannot be the near end, so the object already on the
+ * other side is held back -- but it is reported rather than dropped, because
+ * hovering the one thing you cannot pick and being told "nothing here" is
+ * how you end up thinking the picker is broken.
+ */
+function pickCandidates(wp) {
+  const tol = 6 / S.view.scale;
+  const p = marker((S.sideTarget || {}).portalId);
+  const taken = p ? p.sides[1 - S.sideTarget.i].marker : null;
+  const out = [], blocked = [];
+  const seen = new Set();
+  for (const it of itemsOnLevel()) {
+    if (it.marker.kind !== 'object') continue;      // a portal is not a place
+    if (!hitShape(it.shape, wp, tol)) continue;
+    if (seen.has(it.id)) continue;                  // one entry per marker
+    seen.add(it.id);
+    if (it.id === taken) { blocked.push(it); continue; }
+    const pts = shapePoints(it.shape);
+    const xs = pts.map(q => q[0]), ys = pts.map(q => q[1]);
+    const size = pts.length < 2 ? 0
+      : (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys));
+    out.push({ it, id: it.id, size });
+  }
+  // smallest first, so a lamp inside a hall wins over the hall
+  out.sort((a, b) => a.size - b.size);
+  out.blocked = blocked;
+  return out;
+}
+
+/** Arm the map: the next thing clicked becomes that end of the portal. */
+function startPickSide(portalId, i) {
+  S.sideTarget = { portalId, i };
+  S.pick = null;
+  canvas.classList.add('picking');
+  hint('Hover the map to see what you would pick; <b>Tab</b> steps through '
+     + 'anything stacked under the cursor. You can change sheets first. <b>Esc</b> stops.');
+  needsDraw = true;
+}
+
+function cancelPickSide(quiet) {
+  S.sideTarget = null;
+  S.pick = null;
+  canvas.classList.remove('picking');
+  if (!quiet) hint('');
+  needsDraw = true;
+}
+
+/** Keep the picker's list current as the cursor moves. */
+function updatePick(wp) {
+  const was = S.pick && S.pick.list[S.pick.i];
+  const list = pickCandidates(wp);
+  // hold on to whatever was already under the cursor, so stepping through a
+  // stack with Tab is not undone by a one-pixel wobble of the mouse
+  let i = 0;
+  if (was) {
+    const still = list.findIndex(c => c.id === was.id);
+    if (still >= 0) i = still;
+  }
+  S.pick = { list, i, at: [wp.x, wp.y] };
+  const cur = list[i];
+  if (!cur && list.blocked && list.blocked.length) {
+    hint(`<b>${esc(list.blocked[0].marker.name || 'That')}</b> is already the other `
+       + 'end of this way. Hover something else, or <b>Esc</b> to stop.');
+  } else if (!cur) {
+    hint('Nothing here. Move over an area or a marker, or <b>Esc</b> to stop.');
+  } else {
+    const room = ROOMS.get(cur.it.marker.room);
+    hint(`Set this end to <b>${esc(cur.it.marker.name || '(unnamed)')}</b> `
+       + `&mdash; ${esc(cur.it.marker.room)}${room ? ' ' + esc(room.name) : ''}`
+       + (list.length > 1
+          ? ` &middot; ${i + 1} of ${list.length} here, <b>Tab</b> for the next`
+          : ''));
+  }
+  needsDraw = true;
+}
+
+function cyclePick() {
+  if (!S.pick || S.pick.list.length < 2) return;
+  S.pick.i = (S.pick.i + 1) % S.pick.list.length;
+  updatePick({ x: S.pick.at[0], y: S.pick.at[1] });
+}
+
+/** Take whatever the picker is pointing at. */
+function takePick() {
+  const cur = S.pick && S.pick.list[S.pick.i];
+  if (!cur) {
+    hint('Nothing here to pick. Move over an area or a marker, or <b>Esc</b> to stop.');
+    return true;
+  }
+  const { portalId, i } = S.sideTarget;
+  const p = marker(portalId);
+  if (!p) { cancelPickSide(); return true; }
+  edit('set an end of ' + (nameOf(p, S.roomId) || 'a way'), () => {
+    p.sides[i].marker = cur.id;
+  });
+  cancelPickSide(true);
+  const room = ROOMS.get(cur.it.marker.room);
+  hint(`This way now comes out at <b>${esc(cur.it.marker.name || cur.it.marker.room)}</b>`
+     + `${room ? ' in ' + esc(cur.it.marker.room) + ' ' + esc(room.name) : ''}.`);
+  renderRooms(); renderRoomPanel();
+  return true;
+}
+
+/**
+ * What the picker is about to take, drawn on the map: the thing itself picked
+ * out in white, the rest of the stack under the cursor outlined faintly, and
+ * the name written beside the cursor so the choice is visible where you are
+ * looking rather than only in the hint bar.
+ */
+function drawPick() {
+  if (!S.sideTarget || !S.pick) return;
+  const sc = S.view.scale;
+  const { list, i, at } = S.pick;
+  ctx.save();
+  list.forEach((c, n) => {
+    const on = n === i;
+    const pts = shapePoints(c.it.shape);
+    if (!pts.length) return;
+    ctx.setLineDash(on ? [] : [6 / sc, 5 / sc]);
+    ctx.lineWidth = (on ? 4 : 1.6) / sc;
+    ctx.strokeStyle = on ? '#ffffff' : '#ffffff66';
+    if (c.it.shape.type === 'point') {
+      ctx.beginPath(); ctx.arc(pts[0][0], pts[0][1], (on ? 15 : 12) / sc, 0, 7);
+      if (on) { ctx.fillStyle = '#ffffff33'; ctx.fill(); }
+      ctx.stroke();
+    } else if (c.it.shape.type === 'line') {
+      ctx.lineCap = 'round';
+      ctx.beginPath(); ctx.moveTo(pts[0][0], pts[0][1]); ctx.lineTo(pts[1][0], pts[1][1]);
+      ctx.stroke();
+      ctx.lineCap = 'butt';
+    } else {
+      ctx.beginPath();
+      for (const part of c.it.shape.parts) {
+        part.ring.forEach((q, k) => k ? ctx.lineTo(q[0], q[1]) : ctx.moveTo(q[0], q[1]));
+        ctx.closePath();
+      }
+      if (on) { ctx.fillStyle = '#ffffff22'; ctx.fill('evenodd'); }
+      ctx.stroke();
+    }
+  });
+  ctx.setLineDash([]);
+
+  const cur = list[i];
+  if (cur) {
+    const name = cur.it.marker.name || '(unnamed)';
+    const room = cur.it.marker.room;
+    const line1 = name;
+    const line2 = room + (list.length > 1 ? `  ·  ${i + 1}/${list.length}, Tab` : '');
+    const px = 13 / sc;
+    ctx.font = '600 ' + px + 'px Inter, Segoe UI, sans-serif';
+    const w = Math.max(ctx.measureText(line1).width, ctx.measureText(line2).width) + 14 / sc;
+    const h = 34 / sc;
+    let x = at[0] + 16 / sc, y = at[1] + 16 / sc;
+    ctx.fillStyle = 'rgba(16,14,22,.94)';
+    ctx.strokeStyle = '#ffffff55';
+    ctx.lineWidth = 1 / sc;
+    ctx.beginPath();
+    if (ctx.roundRect) ctx.roundRect(x, y, w, h, 5 / sc); else ctx.rect(x, y, w, h);
+    ctx.fill(); ctx.stroke();
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(line1, x + 7 / sc, y + 5 / sc);
+    ctx.font = (11 / sc) + 'px Inter, Segoe UI, sans-serif';
+    ctx.fillStyle = '#b9b2cc';
+    ctx.fillText(line2, x + 7 / sc, y + 19 / sc);
+  }
+  ctx.restore();
+}
+
 // ==================================================================
-//  tools + pointer
+//  tools
 // ==================================================================
 function setTool(t) {
   S.tool = t;
-  document.querySelectorAll('.tool').forEach(b => b.classList.toggle('active', b.dataset.tool === t));
+  document.querySelectorAll('[data-tool]').forEach(b =>
+    b.classList.toggle('active', b.dataset.tool === t));
   canvas.classList.toggle('drawing', t !== 'select');
-  canvas.classList.toggle('edging', t === 'edges');
-  if (t !== 'edges') S.hoverEdge = null;
-  if (t === 'circle') {
-    hint('<b>Circle.</b> Drag from the centre out to the rim. With snap on, the radius steps by '
-       + 'the square; hold <b>Alt</b> for any size. Four points per square of diameter.');
-  }
-  if (t === 'wallseg' && S.roomId) {
-    const n = wallsOf(S.roomId).length;
-    hint('<b>Wall tool.</b> Drag across the room to lay a wall; Shift keeps it straight. '
-       + 'Walls that meet are joined on export.' + (n ? ` ${n} already in ${esc(S.roomId)}.` : ''));
-  }
-  const shapey = t === 'rect' || t === 'poly' || t === 'circle';
-  $('#boolMode').classList.toggle('dim', !shapey);
+  if (t !== 'poly') S.draft = null;
+  $('#boolMode').classList.toggle('dim', !['rect', 'circle', 'poly'].includes(t));
   needsDraw = true;
 }
 
 function setBool(mode) {
   S.boolMode = mode;
-  if (mode !== 'new' && !['rect', 'poly', 'circle'].includes(S.tool)) setTool('rect');
-  document.querySelectorAll('#boolMode button')
-    .forEach(b => b.classList.toggle('active', b.dataset.bool === mode));
-  if (mode !== 'new') {
-    hint(mode === 'sub'
-      ? 'Draw a shape to <b>cut it out</b> of the selected area, room or marker.'
-      : 'Draw a shape to <b>add it to</b> the selected area, room or marker.');
-  }
-  needsDraw = true;
+  document.querySelectorAll('#boolMode button').forEach(b =>
+    b.classList.toggle('active', b.dataset.bool === mode));
 }
 
-/** A wall drawn inside a room: its own object, not a checklist entry. */
-function commitWall(shape) {
-  if (!S.roomId) { hint('Pick a room first, then draw walls inside it.'); return; }
-  const key = nextWallKey(S.roomId);
-  pushHistory('draw wall in ' + S.roomId);
-  setMark(key, { levelId: S.levelId, shape, kind: 'iwall' });
-  S.sel = key;
-  renderHeight();
-  const n = wallsOf(S.roomId).length;
-  hint(`Wall added to <b>${esc(S.roomId)}</b> (${n} here). Keep drawing, or press <b>V</b> to stop.`);
+/** The area the Edges tool works on: whatever is selected, if it is an area. */
+function edgeTarget() {
+  const it = S.sel && ITEMS.get(S.sel);
+  return it && isArea(it.shape) ? it : null;
+}
+
+function setAllEdges(v) {
+  const et = edgeTarget();
+  if (!et) return;
+  edit(v === WALL ? 'all edges wall' : 'all edges open', () => {
+    for (const part of et.shape.parts) part.edges = part.edges.map(() => v);
+    geomVersion++;
+  });
+  renderRoomPanel();
 }
 
 /**
- * Which mark a stroke belongs to. Rooms have one outline. A marker can have
- * any number of placements: normally a stroke starts a new one, but in add or
- * subtract mode it reshapes the placement already selected instead, so a
- * staircase or a pit can be cut about the same way a room can.
+ * Put a drawn shape into the marker being worked on.
+ *
+ * With New selected each stroke adds another shape, which is how one entry
+ * covers six torches. With + or - the stroke reshapes the shape in hand
+ * instead, so an alcove can be cut out of one staircase without starting a
+ * second.
  */
-function draftTargetKey(shape) {
-  if (S.target.kind !== 'feat') return mid(S.target.kind, S.target.id);
-  const shapey = shape.type === 'rect' || shape.type === 'poly';
-  if (shapey && S.boolMode !== 'new') {
-    const places = placementsOf(S.target.id);
-    const sel = places.find(([k]) => k === S.sel && isArea(getMark(k).shape));
-    if (sel) return sel[0];
-    const last = [...places].reverse().find(([, m]) => isArea(m.shape));
-    if (last) return last[0];
-  }
-  return nextFeatKey(S.target.id);          // each stroke is a new placement
-}
-
 function commitDraft(shape) {
-  if (!S.target) { hint('Pick a room or a marker on the left first, then draw.'); return; }
+  const m = marker(S.markerId);
+  if (!m) { hint('Pick something in the middle column first, then draw.'); return; }
   if (S.momentaryBool) { S.boolModeSaved = S.boolMode; S.boolMode = S.momentaryBool; }
-  const key = draftTargetKey(shape);
-  const prev = getMark(key) || {};
-  const meta = markMeta(key);
-  const dflt = S.target.kind === 'room' ? WALL : OPEN;
-  const shapey = shape.type === 'rect' || shape.type === 'poly';
-  const combining = shapey && isArea(prev.shape) && S.boolMode !== 'new';
-  pushHistory((combining ? (S.boolMode === 'sub' ? 'subtract from ' : 'add to ')
-                         : prev.shape ? 'redraw ' : 'place ') + meta.label);
-  let finalShape;
-  if (combining) {
-    finalShape = prev.shape;
-    applyAreaOp(finalShape, shape, S.boolMode === 'sub' ? 'sub' : 'add', dflt);
-    geomVersion++;
-    normalizeArea(finalShape);
-  } else if (shapey) {
-    finalShape = makeArea(shape, dflt);
-  } else {
-    finalShape = shape;
-  }
-  geomVersion++;
-  setMark(key, Object.assign({}, prev, {
-    levelId: S.levelId, shape: finalShape,
-    secret: meta.type === 'secret-door',
-  }));
+
+  const areaish = shape.type === 'rect' || shape.type === 'poly';
+  const held = S.sel && ITEMS.get(S.sel);
+  const combining = areaish && S.boolMode !== 'new'
+                 && held && held.id === S.markerId && isArea(held.shape);
+  const dflt = m.kind === 'object' && m.objectType === 'area' ? WALL : OPEN;
+  const label = combining ? (S.boolMode === 'sub' ? 'subtract from ' : 'add to ')
+              : 'draw ';
+
+  let where = null;
+  edit(label + (nameOf(m, S.roomId) || 'marker'), () => {
+    if (combining) {
+      applyAreaOp(held.shape, shape, S.boolMode === 'sub' ? 'sub' : 'add', dflt);
+      geomVersion++;
+      normalizeArea(held.shape);
+      where = held.i;
+    } else {
+      const final = areaish ? makeArea(shape, dflt) : shape;
+      final.level = S.levelId;
+      m.shapes.push(final);
+      where = m.shapes.length - 1;
+      geomVersion++;
+    }
+  });
   if (S.momentaryBool) { S.boolMode = S.boolModeSaved; S.momentaryBool = null; }
-  // Stay exactly as the user left things: same target, same tool, same view.
-  // Nothing here switches on its own.
-  S.sel = key;
-  renderHeight();
-  if (S.target.kind === 'feat') {
-    const n = placementsOf(S.target.id).length;
-    hint(combining
-      ? `<b>${esc(meta.label)}</b> &mdash; ${S.boolMode === 'sub' ? 'cut out of' : 'added to'} `
-        + 'this placement. Switch back to <b>New</b> to start another one.'
-      : `<b>${esc(meta.label)}</b> &mdash; ${n} placed. Draw again to add another, `
-        + 'or pick the next entry on the left.');
-  } else {
-    const left = featuresOf(S.roomId).filter(f => !hasMark('feat', f.id)).length;
-    hint(`Placed <b>${esc(meta.label)}</b>.` + (left ? ` ${left} still to place in ${esc(S.roomId)}.` : ''));
-  }
+
+  // stay exactly as the user left things: same target, same tool, same view
+  S.sel = S.markerId + '#' + where;
+  const here = (m.shapes || []).filter(s => s.level === S.levelId).length;
+  hint(combining
+    ? `<b>${esc(nameOf(m, S.roomId))}</b> &mdash; ${S.boolMode === 'sub' ? 'cut out of' : 'added to'}`
+      + ' this drawing. Back to <b>New</b> to start another.'
+    : `<b>${esc(nameOf(m, S.roomId))}</b> &mdash; ${here} on this sheet. Draw again to add another.`);
+  renderRoomPanel();
 }
 
+/** A wall line goes on the room's own outline, which is what a wall belongs to. */
+function commitWall(shape) {
+  const id = ensureArea(S.roomId, S.levelId);
+  const m = marker(id);
+  edit('wall inside ' + S.roomId, () => {
+    m.shapes.push(Object.assign({ type: 'line', level: S.levelId, wall: true },
+                                { x1: shape.x1, y1: shape.y1, x2: shape.x2, y2: shape.y2 }));
+  });
+  hint(`Wall laid inside <b>${esc(S.roomId)}</b>. It blocks sight; the Walls tool stays on.`);
+  renderRoomPanel();
+}
+
+// ==================================================================
+//  the map: pointer
+// ==================================================================
 canvas.addEventListener('contextmenu', e => e.preventDefault());
 
 canvas.addEventListener('pointerdown', e => {
@@ -2463,7 +1738,6 @@ canvas.addEventListener('pointerdown', e => {
   const sp = evPos(e);
   const wp = toWorld(sp.x, sp.y);
 
-  // pan: middle button, right button, space held, or select tool on empty space
   const panBtn = e.button === 1 || e.button === 2 || keys.has(' ');
   if (panBtn) {
     S.drag = { mode: 'pan', sx: sp.x, sy: sp.y, tx: S.view.tx, ty: S.view.ty };
@@ -2473,11 +1747,10 @@ canvas.addEventListener('pointerdown', e => {
   }
   if (e.button !== 0) return;
 
-  if (S.picking) { if (pickAt(wp)) return; }
+  if (S.sideTarget) { updatePick(wp); if (takePick()) return; }
 
   if (S.calibrating) {
-    const p = wp;
-    S.draft = { type: 'cal', x1: p.x, y1: p.y, x2: p.x, y2: p.y };
+    S.draft = { type: 'cal', x1: wp.x, y1: wp.y, x2: wp.x, y2: wp.y };
     S.drag = { mode: 'cal' };
     canvas.setPointerCapture(e.pointerId);
     return;
@@ -2485,16 +1758,16 @@ canvas.addEventListener('pointerdown', e => {
 
   if (S.tool === 'edges') {
     const tol = 12 / S.view.scale;
-    let target = S.sel && getMark(S.sel);
-    let hit = target && isArea(target.shape) ? nearestAreaEdge(target.shape, wp, tol) : null;
-    if (!hit) {                                   // fall back to any area under the cursor
-      for (const [k, mm] of marksOnLevel()) {
-        if (!isArea(mm.shape)) continue;
-        const h = nearestAreaEdge(mm.shape, wp, tol);
-        if (h) { target = mm; S.sel = k; hit = h; break; }
+    let target = edgeTarget();
+    let hit = target ? nearestAreaEdge(target.shape, wp, tol) : null;
+    if (!hit) {
+      for (const it of itemsOnLevel()) {
+        if (!isArea(it.shape)) continue;
+        const h = nearestAreaEdge(it.shape, wp, tol);
+        if (h) { target = it; S.sel = it.key; S.markerId = it.id; hit = h; break; }
       }
     }
-    if (!hit) {                                   // nothing under the cursor: pan instead
+    if (!hit) {
       hint('Click an outline edge to switch it between wall and open.');
       S.drag = { mode: 'pan', sx: sp.x, sy: sp.y, tx: S.view.tx, ty: S.view.ty };
       canvas.classList.add('panning');
@@ -2502,9 +1775,11 @@ canvas.addEventListener('pointerdown', e => {
       return;
     }
     const part = target.shape.parts[hit.pi];
-    pushHistory((part.edges[hit.i] === OPEN ? 'wall edge' : 'open edge'));
-    part.edges[hit.i] = part.edges[hit.i] === OPEN ? WALL : OPEN;
-    geomVersion++; save(); renderFeatures(); needsDraw = true;
+    edit(part.edges[hit.i] === OPEN ? 'wall edge' : 'open edge', () => {
+      part.edges[hit.i] = part.edges[hit.i] === OPEN ? WALL : OPEN;
+      geomVersion++;
+    });
+    renderRoomPanel();
     hint(part.edges[hit.i] === WALL
       ? 'Edge set to <b>wall</b>: it will block line of sight.'
       : 'Edge set to <b>open</b>: it marks the area but blocks nothing.');
@@ -2513,9 +1788,9 @@ canvas.addEventListener('pointerdown', e => {
 
   const sp2 = snap(wp);
 
-  if ((e.ctrlKey || e.metaKey) &&
-      (S.tool === 'rect' || S.tool === 'poly' || S.tool === 'circle'))
+  if ((e.ctrlKey || e.metaKey) && ['rect', 'poly', 'circle'].includes(S.tool)) {
     S.momentaryBool = 'sub';
+  }
   if (S.tool === 'rect') {
     S.draft = { type: 'rect', x: sp2.x, y: sp2.y, w: 0, h: 0, ox: sp2.x, oy: sp2.y };
     S.drag = { mode: 'rect' }; canvas.setPointerCapture(e.pointerId); return;
@@ -2536,42 +1811,40 @@ canvas.addEventListener('pointerdown', e => {
   if (S.tool === 'poly') {
     if (!S.draft || S.draft.type !== 'poly') S.draft = { type: 'poly', pts: [] };
     const first = S.draft.pts[0];
-    if (first && S.draft.pts.length > 2 && Math.hypot(sp2.x - first[0], sp2.y - first[1]) < 12 / S.view.scale) {
+    if (first && S.draft.pts.length > 2
+        && Math.hypot(sp2.x - first[0], sp2.y - first[1]) < 12 / S.view.scale) {
       finishPoly(); return;
     }
     S.draft.pts.push([sp2.x, sp2.y]);
     needsDraw = true; return;
   }
 
-  // select tool -------------------------------------------------
+  // ---- select tool ----
   const tol = 6 / S.view.scale;
-  // 1. handle of the selected mark
-  const selMark = S.sel && getMark(S.sel);
-  if (selMark) {
-    const pts = shapePoints(selMark.shape);
+  const held = S.sel && ITEMS.get(S.sel);
+  if (held) {
+    const pts = shapePoints(held.shape);
     for (let i = 0; i < pts.length; i++) {
       if (Math.hypot(wp.x - pts[i][0], wp.y - pts[i][1]) <= 8 / S.view.scale) {
-        S.drag = { mode: 'handle', key: S.sel, i, pending: 'reshape ' + markMeta(S.sel).label };
+        S.drag = { mode: 'handle', key: S.sel, i,
+                   pending: 'reshape ' + (nameOf(held.marker, S.roomId) || 'marker') };
         canvas.setPointerCapture(e.pointerId); return;
       }
     }
   }
-  // 2. any mark body (features before rooms so small things win)
-  const entries = marksOnLevel().sort((a, b) => (a[0].startsWith('room:') ? 1 : 0) - (b[0].startsWith('room:') ? 1 : 0));
-  for (const [key, m] of entries) {
-    if (hitShape(m.shape, wp, tol)) {
-      S.sel = key;
-      const meta0 = markMeta(key);
-      const sk = splitKey(key);
-      if (sk.kind === 'room') { S.roomId = sk.id; S.target = { kind: 'room', id: sk.id }; }
-      else { S.roomId = sk.id.split('::')[0]; S.target = { kind: 'feat', id: sk.id }; }
-      renderRooms(); renderFeatures();
-      S.drag = { mode: 'move', key, lx: wp.x, ly: wp.y, pending: 'move ' + meta0.label };
-      canvas.setPointerCapture(e.pointerId);
-      needsDraw = true; return;
-    }
+  // small things before outlines, so a door on a wall wins over the room
+  const pool = itemsOnLevel().slice().sort((a, b) =>
+    (a.marker.objectType === 'area' ? 1 : 0) - (b.marker.objectType === 'area' ? 1 : 0));
+  for (const it of pool) {
+    if (!hitShape(it.shape, wp, tol)) continue;
+    S.sel = it.key;
+    selectMarker(it.id);
+    S.sel = it.key;                       // selectMarker picks the first on this sheet
+    S.drag = { mode: 'move', key: it.key, lx: wp.x, ly: wp.y,
+               pending: 'move ' + (nameOf(it.marker, S.roomId) || 'marker') };
+    canvas.setPointerCapture(e.pointerId);
+    needsDraw = true; return;
   }
-  // 3. empty space -> pan
   S.drag = { mode: 'pan', sx: sp.x, sy: sp.y, tx: S.view.tx, ty: S.view.ty };
   canvas.classList.add('panning');
   canvas.setPointerCapture(e.pointerId);
@@ -2585,12 +1858,14 @@ canvas.addEventListener('pointermove', e => {
   $('#coords').textContent =
     `${Math.round(wp.x)}, ${Math.round(wp.y)} px · col ${Math.floor((wp.x - g.offsetX) / g.size)}, row ${Math.floor((wp.y - g.offsetY) / g.size)}`;
 
+  if (S.sideTarget) { updatePick(wp); return; }
+
   const d = S.drag;
   if (!d) {
     if (S.draft && S.draft.type === 'poly') { S.draft.cursor = [snap(wp).x, snap(wp).y]; needsDraw = true; }
     if (S.tool === 'edges') {
-      const m = S.sel && getMark(S.sel);
-      const h = m && isArea(m.shape) ? nearestAreaEdge(m.shape, wp, 12 / S.view.scale) : null;
+      const et = edgeTarget();
+      const h = et ? nearestAreaEdge(et.shape, wp, 12 / S.view.scale) : null;
       const changed = JSON.stringify(h) !== JSON.stringify(S.hoverEdge);
       S.hoverEdge = h;
       if (changed) needsDraw = true;
@@ -2623,15 +1898,17 @@ canvas.addEventListener('pointermove', e => {
   } else if (d.mode === 'cal') {
     S.draft.x2 = wp.x; S.draft.y2 = wp.y; needsDraw = true;
   } else if (d.mode === 'handle') {
-    const m = getMark(d.key);
+    const it = ITEMS.get(d.key);
+    if (!it) return;
     if (d.pending) { pushHistory(d.pending); d.pending = null; }
-    setShapePoint(m.shape, d.i, s.x, s.y);
+    setShapePoint(it.shape, d.i, s.x, s.y);
     geomVersion++; needsDraw = true; save();
   } else if (d.mode === 'move') {
-    const m = getMark(d.key);
+    const it = ITEMS.get(d.key);
+    if (!it) return;
     if (Math.abs(wp.x - d.lx) < 1e-9 && Math.abs(wp.y - d.ly) < 1e-9) return;
     if (d.pending) { pushHistory(d.pending); d.pending = null; }
-    moveShape(m.shape, wp.x - d.lx, wp.y - d.ly);
+    moveShape(it.shape, wp.x - d.lx, wp.y - d.ly);
     d.lx = wp.x; d.ly = wp.y;
     geomVersion++; needsDraw = true; save();
   }
@@ -2655,8 +1932,8 @@ canvas.addEventListener('pointerup', e => {
     needsDraw = true;
   } else if (d.mode === 'seg') {
     const dr = S.draft; S.draft = null;
-    const shape = { type: 'seg', x1: dr.x1, y1: dr.y1, x2: dr.x2, y2: dr.y2 };
     if (Math.hypot(dr.x2 - dr.x1, dr.y2 - dr.y1) > 2) {
+      const shape = { type: 'line', x1: dr.x1, y1: dr.y1, x2: dr.x2, y2: dr.y2, wall: false };
       if (dr.wall) commitWall(shape); else commitDraft(shape);
     }
     needsDraw = true;
@@ -2695,17 +1972,13 @@ window.addEventListener('keyup', e => {
   keys.delete(e.key);
   if (e.key === 'Alt' || !e.altKey) setSnapSuspended(false);
 });
-// if focus leaves mid-press the keyup never arrives, so drop the hold
 window.addEventListener('blur', () => setSnapSuspended(false));
+
 window.addEventListener('keydown', e => {
   keys.add(e.key);
-  if (e.key === 'Alt') {
-    e.preventDefault();          // stop Alt reaching the browser menu bar
-    setSnapSuspended(true);
-  }
+  if (e.key === 'Alt') { e.preventDefault(); setSnapSuspended(true); }
   const tag = (e.target.tagName || '').toLowerCase();
   const typing = tag === 'input' || tag === 'textarea' || tag === 'select';
-  // Ctrl/Cmd+Z anywhere except a text field, where the browser's own undo wins
   if ((e.ctrlKey || e.metaKey) && !typing) {
     const k = e.key.toLowerCase();
     if (k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
@@ -2726,31 +1999,30 @@ window.addEventListener('keydown', e => {
     syncGridDialog(); save(); needsDraw = true; return;
   }
 
-  if (e.key.toLowerCase() === 'l' && !e.ctrlKey && !e.metaKey) {
-    S.picking ? cancelPick() : startPick(linkSubject() ? 'same' : 'conn');
-    return;
-  }
+  if (e.key === 'Tab' && S.sideTarget) { e.preventDefault(); cyclePick(); return; }
+
   const map = { v: 'select', r: 'rect', c: 'circle', p: 'poly', d: 'seg',
                 t: 'point', e: 'edges', w: 'wallseg' };
-  if (map[e.key.toLowerCase()] && !e.ctrlKey && !e.metaKey) { setTool(map[e.key.toLowerCase()]); return; }
+  const low = e.key.toLowerCase();
+  if (map[low] && !e.ctrlKey && !e.metaKey) { setTool(map[low]); return; }
   if (e.key === 'Escape') {
-    if (S.picking) { cancelPick(); return; }
+    if (S.sideTarget) { cancelPickSide(); return; }
     S.draft = null; S.calibrating = false; hint(''); needsDraw = true; return;
   }
   if (e.key === 'Enter' && S.draft && S.draft.type === 'poly') { finishPoly(); return; }
-  if (e.key === 'Backspace' && S.draft && S.draft.type === 'poly') { S.draft.pts.pop(); needsDraw = true; return; }
+  if (e.key === 'Backspace' && S.draft && S.draft.type === 'poly') {
+    S.draft.pts.pop(); needsDraw = true; return;
+  }
   if ((e.key === 'Delete' || e.key === 'Backspace') && S.sel) {
     e.preventDefault();
-    pushHistory('delete ' + markMeta(S.sel).label);
-    forgetLinksFor([S.sel]);
-    setMark(S.sel, null);
+    deleteShape(S.sel);
     return;
   }
-  if (e.key === 'g') { S.showGrid = !S.showGrid; $('#showGrid').checked = S.showGrid; needsDraw = true; }
+  if (low === 'g') { S.showGrid = !S.showGrid; $('#showGrid').checked = S.showGrid; needsDraw = true; }
   if (e.key === '1') setBool('new');
   if (e.key === '2') setBool('add');
   if (e.key === '3') setBool('sub');
-  if (e.key === 'f') fitView();
+  if (low === 'f') fitView();
 });
 
 // ==================================================================
@@ -2789,46 +2061,26 @@ function syncGridDialog() {
 // ==================================================================
 //  export
 // ==================================================================
-// ---- portals, and the holes they leave in the walls ----------------------
-
-const PORTAL_RANK = { 'secret-door': 3, door: 2, window: 1 };
-// A portal starts open only when the text says there is nothing in the opening.
-const NO_LEAF = /gaping|door gone|no door|doorless|hanging open/i;
-const ARCH = /archway|arched opening|open arch/i;
-const HAS_LEAF = /doors? in|iron doors?|wooden doors?|slab door|oak door|double doors?|portcullis/i;
-const opensClear = label =>
-  NO_LEAF.test(label) || (ARCH.test(label) && !HAS_LEAF.test(label));
-
-/** Do two door marks describe the same opening? */
-function portalsOverlap(k, c, ppg) {
-  const pa = k.fromPoint ? k.at : [(k.a[0]+k.b[0])/2, (k.a[1]+k.b[1])/2];
-  const pb = c.fromPoint ? c.at : [(c.a[0]+c.b[0])/2, (c.a[1]+c.b[1])/2];
-  const gap = Math.hypot(pa[0]-pb[0], pa[1]-pb[1]);
-  if (gap > ppg * 0.5) return false;
-  if (gap < ppg * 0.15) return true;              // right on top of each other
-  const sameAngle = () => {
-    if (k.fromPoint || c.fromPoint) return true;          // a point beside a line
-    const ang = s => Math.atan2(s.b[1]-s.a[1], s.b[0]-s.a[0]);
-    const d = Math.abs(ang(k) - ang(c)) % Math.PI;
-    return Math.min(d, Math.PI - d) < 0.35;
-  };
-  if (!sameAngle()) return false;
-  if (k.meta.type === c.meta.type) return true;
-  // a door and a window drawn on the very same line are one opening described
-  // twice, from either side; further apart they are two different things
-  return gap < ppg * 0.15;
-}
-
-/** Fold a duplicate into the portal already found, keeping the longer span. */
-function mergePortal(k, c) {
-  k.keys.push(...c.keys);
-  if (!c.fromPoint) {
-    const lk = k.a ? Math.hypot(k.b[0]-k.a[0], k.b[1]-k.a[1]) : 0;
-    const lc = Math.hypot(c.b[0]-c.a[0], c.b[1]-c.a[1]);
-    if (lc > lk || k.fromPoint) { k.a = c.a; k.b = c.b; k.fromPoint = false; }
-  }
-  if ((PORTAL_RANK[c.meta.type] || 0) > (PORTAL_RANK[k.meta.type] || 0)) k.meta = c.meta;
-}
+// Universal VTT, one file per sheet, plus a companion notes file carrying
+// everything the format has nowhere to put.
+//
+// This is where the model earns its keep. The old export had to find its
+// portals by clustering marks that sat on top of one another, because a door
+// was two records and only geometry could say they were one. A portal is one
+// record now, and it says what it is, so the whole of that is gone and what
+// is left is four rules:
+//
+//   open                 a hole: cut the wall, emit no portal
+//   door                 cut the wall, emit a portal, shut unless it stands open
+//   barrier, see-through cut the wall, emit a portal that never blocks sight
+//   barrier, solid       leave the wall alone and emit nothing
+//
+// with one qualification the table in SCHEMA.md does not make: only a portal
+// drawn as a line or a point is an opening in a wall. A portal drawn as an
+// area is a footprint -- a staircase, the mouth of a shaft -- and cutting
+// every wall it overlapped would open the rooms it merely passes through. An
+// open boundary needs no cut in any case: the outline's own edge flags
+// already leave it open.
 
 /** The wall a loose point belongs to, with the foot of the perpendicular. */
 function nearestWallTo(walls, pt, tol) {
@@ -2899,6 +2151,29 @@ function openWallsAtPortals(walls, portals, ppg) {
   return out;
 }
 
+/** The openings a portal makes in the walls of one sheet. */
+function openingsOf(p, levelId) {
+  const out = [];
+  for (const sh of p.shapes || []) {
+    if (sh.level !== levelId) continue;
+    if (sh.type === 'line') {
+      out.push({ portal: p, a: [sh.x1, sh.y1], b: [sh.x2, sh.y2], fromPoint: false });
+    } else if (sh.type === 'point') {
+      out.push({ portal: p, at: [sh.x, sh.y], fromPoint: true });
+    }
+    // an area is a footprint, not a doorway: see the note above
+  }
+  return out;
+}
+
+/** Does this portal let anything through the wall it sits in? */
+const portalOpensWall = p =>
+  p.passage === 'open' || p.passage === 'door' || (p.passage === 'barrier' && p.transparent);
+
+/** Does the VTT need a door object here, or is it simply a gap? */
+const portalIsDoor = p => p.passage === 'door'
+  || (p.passage === 'barrier' && p.transparent);
+
 async function runExport() {
   const status = $('#expStatus');
   const which = $('#expLevel').value;
@@ -2908,16 +2183,24 @@ async function runExport() {
   const player = $('#expPlayer').checked;
   const sub = parseInt($('#expGrid').value, 10) || 1;
 
-  const ids = which === '*'
-    ? DATA.levels.filter(l => Object.values(ANN.marks).some(m => m.levelId === l.id)).map(l => l.id)
-    : [which];
-  if (!ids.length) { status.textContent = 'Nothing marked yet.'; return; }
+  const drawn = new Set();
+  for (const m of Object.values(ANN.markers)) {
+    for (const sh of m.shapes || []) drawn.add(sh.level);
+  }
+  const ids = which === '*' ? DATA.levels.filter(l => drawn.has(l.id)).map(l => l.id) : [which];
+  if (!ids.length) { status.textContent = 'Nothing drawn yet.'; return; }
 
   $('#expRun').disabled = true;
   for (const id of ids) {
     status.textContent = 'Building ' + LEVELS.get(id).name + '…';
-    try { await exportLevel(id, scale, wantLos, wantLights, player, sub); }
-    catch (err) { status.textContent = 'Failed on ' + id + ': ' + err.message; $('#expRun').disabled = false; return; }
+    try {
+      await exportLevel(id, scale, wantLos, wantLights, player, sub);
+    } catch (err) {
+      status.textContent = 'Failed on ' + id + ': ' + err.message;
+      $('#expRun').disabled = false;
+      console.error(err);
+      return;
+    }
   }
   status.textContent = `Wrote ${ids.length} file${ids.length > 1 ? 's' : ''} to the exports folder.`;
   $('#expRun').disabled = false;
@@ -2940,86 +2223,64 @@ async function exportLevel(levelId, scale, wantLos, wantLights, player, sub) {
   const W = x => (x - cx) / unit;
   const H = y => (y - cy) / unit;
 
-  const marks = Object.entries(ANN.marks).filter(([, m]) => m.levelId === levelId);
-  const PORTAL_KINDS = ['door', 'secret-door', 'window'];
+  const here = itemsOnLevel(levelId);
 
   // ---------------------------------------------------------------- portals
-  // A door between two rooms is usually on both rooms' checklists, so the same
-  // doorway is marked twice. Cluster the marks that sit on top of one another
-  // and export one portal for each real opening.
-  const cand = [];
-  for (const [key, m] of marks) {
-    const meta = markMeta(key);
-    if (!PORTAL_KINDS.includes(meta.type)) continue;
-    const sh = m.shape;
-    if (!sh) continue;
-    if (sh.type === 'seg') {
-      cand.push({ keys: [key], meta, a: [sh.x1, sh.y1], b: [sh.x2, sh.y2], fromPoint: false });
-    } else if (sh.type === 'point') {
-      cand.push({ keys: [key], meta, at: [sh.x, sh.y], fromPoint: true });
-    } else if (isArea(sh) || sh.type === 'poly' || sh.type === 'rect') {
-      const pts = shapePoints(sh);
-      let best = null;                    // the longest span across the shape
-      for (let i = 0; i < pts.length; i++) for (let j = i + 1; j < pts.length; j++) {
-        const d = Math.hypot(pts[i][0] - pts[j][0], pts[i][1] - pts[j][1]);
-        if (!best || d > best.d) best = { d, a: pts[i], b: pts[j] };
-      }
-      if (best) cand.push({ keys: [key], meta, a: best.a, b: best.b, fromPoint: false });
-    }
-  }
-  const clusters = [];
-  for (const c of cand) {
-    const hit = clusters.find(k => portalsOverlap(k, c, ppg));
-    if (hit) mergePortal(hit, c); else clusters.push(c);
+  const openings = [];
+  for (const m of Object.values(ANN.markers)) {
+    if (m.kind !== 'portal') continue;
+    for (const o of openingsOf(m, levelId)) openings.push(o);
   }
 
   // ------------------------------------------------------------------ walls
   // every stretch of outline flagged as a wall, plus the walls drawn inside
   const rawWalls = [];
   if (wantLos) {
-    for (const [key, m] of marks) {
-      const meta = markMeta(key);
-      if (isArea(m.shape)) {
-        for (const sg of areaBoundary(m.shape)) {
-          if (sg.wall) rawWalls.push({ a: sg.a, b: sg.b, src: key });
+    for (const it of here) {
+      if (isArea(it.shape)) {
+        for (const sg of areaBoundary(it.shape)) {
+          if (sg.wall) rawWalls.push({ a: sg.a, b: sg.b, src: it.key });
         }
-      } else if (meta.type === 'wall' && m.shape.type === 'seg') {
-        rawWalls.push({ a: [m.shape.x1, m.shape.y1], b: [m.shape.x2, m.shape.y2], src: key });
+      } else if (it.shape.type === 'line' && it.shape.wall) {
+        rawWalls.push({ a: [it.shape.x1, it.shape.y1], b: [it.shape.x2, it.shape.y2], src: it.key });
       }
     }
   }
 
-  // a point marked as a door, window or arrow slit belongs to the wall it sits
-  // against: give it a narrow opening there, lined up with that wall
-  for (const c of clusters) {
-    if (!c.fromPoint) continue;
-    const host = nearestWallTo(rawWalls, c.at, ppg * 0.9);
-    const w = c.meta.type === 'door' ? ppg * 0.5 : ppg * 0.25;   // 5 ft, or 2.5 ft for a slit
+  // a portal marked as a point belongs to the wall it sits against: give it a
+  // narrow opening there, lined up with that wall
+  for (const o of openings) {
+    if (!o.fromPoint) continue;
+    const host = nearestWallTo(rawWalls, o.at, ppg * 0.9);
+    const w = o.portal.passage === 'barrier' ? ppg * 0.25 : ppg * 0.5;  // 2.5 ft slit, else 5 ft
     if (host) {
       const [hx, hy] = host.foot;
-      c.a = [hx - host.ux * w / 2, hy - host.uy * w / 2];
-      c.b = [hx + host.ux * w / 2, hy + host.uy * w / 2];
-      c.onWall = true;
+      o.a = [hx - host.ux * w / 2, hy - host.uy * w / 2];
+      o.b = [hx + host.ux * w / 2, hy + host.uy * w / 2];
+      o.onWall = true;
     } else {                                   // nothing to sit in: keep it square on
-      c.a = [c.at[0] - w / 2, c.at[1]];
-      c.b = [c.at[0] + w / 2, c.at[1]];
+      o.a = [o.at[0] - w / 2, o.at[1]];
+      o.b = [o.at[0] + w / 2, o.at[1]];
     }
   }
 
-  // walls give way where a portal crosses them
-  const cutWalls = wantLos ? openWallsAtPortals(rawWalls, clusters, ppg) : [];
+  // walls give way only where something can actually pass or be seen through
+  const cutting = openings.filter(o => portalOpensWall(o.portal));
+  const cutWalls = wantLos ? openWallsAtPortals(rawWalls, cutting, ppg) : [];
 
-  window.__export = { levelId, ppg, clusters, rawWalls, cutWalls };   // for tests
-  const portals = clusters.map(c => {
-    const a = { x: +W(c.a[0]).toFixed(4), y: +H(c.a[1]).toFixed(4) };
-    const b = { x: +W(c.b[0]).toFixed(4), y: +H(c.b[1]).toFixed(4) };
+  window.__export = { levelId, ppg, openings, rawWalls, cutWalls };   // for tests
+
+  const portals = openings.filter(o => portalIsDoor(o.portal)).map(o => {
+    const p = o.portal;
+    const a = { x: +W(o.a[0]).toFixed(4), y: +H(o.a[1]).toFixed(4) };
+    const b = { x: +W(o.b[0]).toFixed(4), y: +H(o.b[1]).toFixed(4) };
     return {
       position: { x: +((a.x + b.x) / 2).toFixed(4), y: +((a.y + b.y) / 2).toFixed(4) },
       bounds: [a, b],
       rotation: +Math.atan2(b.y - a.y, b.x - a.x).toFixed(5),
-      // an archway or a doorway with the door gone is a hole in the wall, so it
-      // starts open; a window is see-through either way
-      closed: c.meta.type !== 'window' && !opensClear(c.meta.label || ''),
+      // a see-through barrier is a window: it stands shut but sight goes by,
+      // which the format spells "not closed"
+      closed: p.passage === 'door' && p.state !== 'open',
       freestanding: false,
     };
   });
@@ -3033,51 +2294,89 @@ async function exportLevel(levelId, scale, wantLos, wantLights, player, sub) {
 
   // ------------------------------------------------------------------ notes
   const lights = [], notes = [];
-  for (const [key, m] of marks) {
-    const meta = markMeta(key);
-    const pts = shapePoints(m.shape).map(p => ({ x: +W(p[0]).toFixed(4), y: +H(p[1]).toFixed(4) }));
-    const rec = LINKS.get(key);
-    const ci = clusters.findIndex(c => c.keys.includes(key));
+  const seen = new Set();
+  for (const it of here) {
+    const m = it.marker;
+    const pts = shapePoints(it.shape).map(p => ({ x: +W(p[0]).toFixed(4), y: +H(p[1]).toFixed(4) }));
     const note = {
-      id: key, kind: meta.type, label: meta.label, room: meta.roomId,
-      roomName: ROOMS.get(meta.roomId)?.name || null,
-      shape: m.shape.type, points: pts,
-      height: heightOf(key, m),
-      links: rec ? {
-        sameAs: rec.same, rooms: rec.rooms, leadsTo: rec.to, alsoOnSheets: rec.levels,
-        reaches: rec.reach && rec.reach.length ? rec.reach : undefined,
-        // on a room outline, every way out with the thing that makes it one
-        ways: rec.ways && rec.ways.length ? rec.ways : undefined,
-      } : undefined,
-      portal: ci >= 0 ? ci : undefined,
+      id: it.key, marker: it.id, kind: m.kind,
+      shape: it.shape.type, points: pts,
+      height: heightOf(it),
     };
-    if (isArea(m.shape)) {
-      note.parts = m.shape.parts.map(part => ({
+    if (m.kind === 'object') {
+      note.type = m.objectType;
+      note.name = m.name;
+      note.description = m.description || undefined;
+      note.room = m.room;
+      note.roomName = (ROOMS.get(m.room) || {}).name || null;
+    } else {
+      note.passage = m.passage;
+      note.state = m.state;
+      note.secret = m.secret || undefined;
+      note.lockable = m.lockable || undefined;
+      note.transparent = m.transparent || undefined;
+      note.sides = m.sides.map(s => {
+        const o = marker(s.marker);
+        return {
+          name: s.name || undefined,
+          description: s.description || undefined,
+          room: o ? o.room : null,
+          roomName: o ? ((ROOMS.get(o.room) || {}).name || null) : null,
+          sheet: o ? objectLevel(o) : null,
+          floorFeet: o ? objectFloor(o) : null,
+        };
+      });
+      const [a, b] = note.sides;
+      note.leadsTo = [a.room, b.room].filter(Boolean);
+      if (a.floorFeet !== null && b.floorFeet !== null) {
+        note.riseFeet = b.floorFeet - a.floorFeet;
+      }
+    }
+    if (m.light) note.light = m.light;
+    if (isArea(it.shape)) {
+      note.parts = it.shape.parts.map(part => ({
         op: part.op,
         ring: part.ring.map(p => ({ x: +W(p[0]).toFixed(4), y: +H(p[1]).toFixed(4) })),
         edges: part.edges.map(v => (v === OPEN ? 'open' : 'wall')),
       }));
-      note.boundary = areaBoundary(m.shape).map(sg => ({
+      note.boundary = areaBoundary(it.shape).map(sg => ({
         wall: !!sg.wall,
         a: { x: +W(sg.a[0]).toFixed(4), y: +H(sg.a[1]).toFixed(4) },
         b: { x: +W(sg.b[0]).toFixed(4), y: +H(sg.b[1]).toFixed(4) },
       }));
     }
     notes.push(note);
-    if (wantLights && meta.type === 'light' && m.shape.type === 'point') {
-      lights.push({ position: pts[0], range: 4, intensity: 1, color: 'ffd89b', shadows: true });
+
+    // the format carries one radius, so dim is the reach and bright sets how
+    // hard it burns; anything lit that is drawn as a point becomes a light
+    if (wantLights && m.light && it.shape.type === 'point' && !seen.has(it.key)) {
+      seen.add(it.key);
+      const dim = Math.max(m.light.dim || 0, m.light.bright || 0);
+      lights.push({
+        position: pts[0],
+        range: +(dim / (g.feetPerSquare || 10)).toFixed(3),
+        intensity: +Math.min(1, Math.max(0.15, (m.light.bright || 0) / (dim || 1))).toFixed(3),
+        color: 'ffd89b', shadows: true,
+      });
     }
   }
-  const portalNotes = clusters.map((c, i) => ({
-    index: i, kind: c.meta.type, label: c.meta.label,
-    fromMarks: c.keys,
-    rooms: [...new Set(c.keys.flatMap(k => (LINKS.get(k)?.rooms || [])))].sort(),
-    leadsTo: [...new Set(c.keys.flatMap(k => (LINKS.get(k)?.to || [])))].sort(),
-    height: c.keys.map(k => heightOf(k, ANN.marks[k])).find(h => h) || null,
-    narrow: !!c.fromPoint,
-    bounds: [{ x: +W(c.a[0]).toFixed(4), y: +H(c.a[1]).toFixed(4) },
-             { x: +W(c.b[0]).toFixed(4), y: +H(c.b[1]).toFixed(4) }],
-  }));
+
+  // and every room on this sheet, with the ways off it, worked out once
+  const roomNotes = [];
+  for (const r of DATA.rooms) {
+    const area = areaObjectOf(r.id, levelId);
+    if (!area) continue;
+    roomNotes.push({
+      id: r.id, name: r.name, outline: area,
+      floorFeet: objectFloor(marker(area)),
+      contents: contentsOf(r.id, levelId).map(o => ({ id: o.id, type: o.type, name: o.name })),
+      ways: connectionsOf(r.id, levelId).map(c => ({
+        portal: c.id, to: c.to, how: c.how, state: c.state || undefined,
+        name: c.label, riseFeet: c.go ? c.go.rise : null,
+        toSheet: c.go ? c.go.sheet : null,
+      })),
+    });
+  }
 
   const ppgOut = scale > 0 ? Math.max(8, Math.round(unit * scale)) : Math.round(unit);
   let image = '';
@@ -3119,7 +2418,7 @@ async function exportLevel(levelId, scale, wantLos, wantLights, player, sub) {
     sourcePixelsPerDrawnSquare: ppg, exportPixelsPerCell: unit,
     cropX: cx, cropY: cy, columns: cols, rows,
     groundElevationFeet: 0, levelElevationFeet: levelElevation(levelId),
-    markers: notes, portals: portalNotes,
+    rooms: roomNotes, markers: notes,
   }, null, 1));
 }
 
@@ -3164,8 +2463,8 @@ function wire() {
   new ResizeObserver(resize).observe(canvas);
   resize();
 
-  $('#levelSelect').onchange = e => { setLevel(e.target.value, true); };
-  $('#packSelect').onchange = e => { setPack(e.target.value); };
+  $('#levelSelect').onchange = e => setLevel(e.target.value, true).then(renderRoomPanel);
+  $('#packSelect').onchange = e => setPack(e.target.value);
   $('#playerMap').onchange = e => { S.playerMap = e.target.checked; setLevel(S.levelId); };
   $('#showGrid').onchange = e => { S.showGrid = e.target.checked; needsDraw = true; };
   $('#snapMode').onchange = e => { S.snap = e.target.value; };
@@ -3173,27 +2472,30 @@ function wire() {
   document.querySelectorAll('.tool').forEach(b => b.onclick = () => setTool(b.dataset.tool));
   document.querySelectorAll('#boolMode button')
     .forEach(b => b.onclick = () => setBool(b.dataset.bool));
+
   const readH = () => {
-    const key = S.sel && ANN.marks[S.sel] ? S.sel : null;
-    if (!key) return;
+    if (!S.markerId) return;
     const fv = $('#hFrom').value.trim(), tv = $('#hTo').value.trim();
-    if (fv === '' && tv === '') { setHeight(key, null, null); return; }
-    const a = fv === '' ? floorUnder(key, ANN.marks[key]) : Number(fv);
+    if (fv === '' && tv === '') { setHeight(S.markerId, null, null); return; }
+    const it = S.sel && ITEMS.get(S.sel);
+    const a = fv === '' ? (it ? floorUnder(it) : levelElevation(S.levelId)) : Number(fv);
     const b = tv === '' ? null : Number(tv);
     if (Number.isNaN(a) || (b !== null && Number.isNaN(b))) return;
-    setHeight(key, a, b);
+    setHeight(S.markerId, a, b);
   };
   $('#hFrom').onchange = readH;
   $('#hTo').onchange = readH;
   $('#hFrom').onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') e.target.blur(); };
   $('#hTo').onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') e.target.blur(); };
   $('#hClear').onclick = () => {
-    const key = S.sel && ANN.marks[S.sel] ? S.sel : null;
-    if (key) { $('#hFrom').value = ''; $('#hTo').value = ''; setHeight(key, null, null); }
+    if (!S.markerId) return;
+    $('#hFrom').value = ''; $('#hTo').value = '';
+    setHeight(S.markerId, null, null);
   };
+
   // ---- panes you can drag wider ----
-  const WIDTHS = { rooms: '--w-rooms', feats: '--w-feats' };
-  const LIMITS = { rooms: [170, 520], feats: [220, 720] };
+  const WIDTHS = { rooms: '--w-rooms', feats: '--w-feats', props: '--w-props' };
+  const LIMITS = { rooms: [170, 520], feats: [220, 720], props: [220, 560] };
   const layout = $('#layout');
   for (const [name, v] of Object.entries(WIDTHS)) {
     const saved = localStorage.getItem('cr.w.' + name);
@@ -3245,48 +2547,23 @@ function wire() {
     if (row) selectRoom(row.dataset.room);
   };
 
-  let lastClick = { id: null, at: 0 };
-
   $('#alsoOn').onclick = e => {
-    const go = e.target.closest('[data-goroom]');
-    if (go) { selectRoom(go.dataset.goroom); return; }
     const b = e.target.closest('[data-golevel]');
-    if (b) setLevel(b.dataset.golevel).then(() => { renderFeatures(); needsDraw = true; });
+    if (b) setLevel(b.dataset.golevel).then(() => {
+      S.markerId = areaObjectOf(S.roomId, S.levelId) || null;
+      S.sel = null;
+      renderRoomPanel(); centerOnRoom(S.roomId); needsDraw = true;
+    });
   };
 
   $('#featureList').onclick = e => {
     const go = e.target.closest('[data-goroom]');
     if (go) { e.stopPropagation(); selectRoom(go.dataset.goroom); return; }
-    const del = e.target.closest('[data-del]');
-    if (del) {
-      e.stopPropagation();
-      const fid = del.dataset.del;
-      const gone = featuresOf(S.roomId).find(f => f.id === fid);
-      pushHistory('remove "' + (gone ? gone.label : fid) + '"');
-      const custom = ANN.customFeatures[S.roomId] || [];
-      const ci = custom.findIndex(f => f.id === fid);
-      if (ci >= 0) custom.splice(ci, 1);
-      else if (!ANN.hiddenFeatures.includes(fid)) ANN.hiddenFeatures.push(fid);
-      forgetLinksFor(marksOf('feat', fid).map(([k]) => k));
-      marksOf('feat', fid).forEach(([k]) => delete ANN.marks[k]);
-      save(); renderFeatures(); renderRooms(); needsDraw = true;
-      return;
-    }
-    const ren = e.target.closest('[data-ren]');
-    if (ren) { e.stopPropagation(); startRename(ren.dataset.ren); return; }
-    const row = e.target.closest('[data-feat]');
-    if (!row) return;
-    const now = Date.now();
-    if (lastClick.id === row.dataset.feat && now - lastClick.at < 450) {
-      lastClick = { id: null, at: 0 };
-      startRename(row.dataset.feat);
-      return;
-    }
-    lastClick = { id: row.dataset.feat, at: now };
-    selectFeature(row.dataset.feat);
+    const del = e.target.closest('[data-delmarker]');
+    if (del) { e.stopPropagation(); deleteMarker(del.dataset.delmarker); return; }
+    const row = e.target.closest('[data-marker]');
+    if (row) selectMarker(row.dataset.marker, { center: true });
   };
-  // The first click re-renders the list, so the row the browser would fire
-  // dblclick on is already detached; the click handler above pairs them by hand.
 
   $('#typeFilters').onclick = e => {
     const b = e.target.closest('[data-type]');
@@ -3294,112 +2571,110 @@ function wire() {
     const t = b.dataset.type;
     S.typeFilter.has(t) ? S.typeFilter.delete(t) : S.typeFilter.add(t);
     b.classList.toggle('on');
-    renderFeatures();
+    renderRoomPanel();
   };
 
   $('#markRoomBtn').onclick = () => {
     if (!S.roomId) return;
-    S.target = { kind: 'room', id: S.roomId };
-    S.sel = mid('room', S.roomId);
+    const id = ensureArea(S.roomId, S.levelId);
+    reindex();
+    S.markerId = id;
+    S.sel = (firstItemOn(id, S.levelId) || {}).key || null;
     setTool('rect');
-    hint(`<b>${esc(S.roomId)}</b> — drag a rectangle over the room, or press <b>P</b> to trace a polygon.`);
-    renderFeatures();
+    renderRooms(); renderRoomPanel();
+    hint(`<b>${esc(S.roomId)}</b> &mdash; drag a rectangle over the room, or <b>P</b> to trace it.`);
   };
 
   $('#textToggle').onclick = () => $('.textSplit').classList.toggle('open');
-  // open by default: the links are the part of this you are meant to correct
-  if (localStorage.getItem('cr.links') !== 'shut') $('#linkSplit').classList.add('open');
-  $('#linkToggle').onclick = () => {
-    const open = $('#linkSplit').classList.toggle('open');
-    localStorage.setItem('cr.links', open ? 'open' : 'shut');
-  };
 
-  // ---- links panel ----
-  $('#linkPanel').onclick = e => {
-    const go = e.target.closest('[data-goroom]');
-    if (go) { selectRoom(go.dataset.goroom); return; }
-    const gm = e.target.closest('[data-gomark]');
-    if (gm) { showMark(gm.dataset.gomark); return; }
-    const cs = e.target.closest('[data-cutsame]');
-    if (cs) {
-      const subject = linkSubject();
-      if (subject) setLink('same', subject, cs.dataset.cutsame, false);
-      return;
+  // ---- the properties panel ----
+  const panel = $('#linkPanel');
+  panel.onclick = e => {
+    const pick = e.target.closest('[data-pickside]');
+    if (pick) { startPickSide(S.markerId, +pick.dataset.pickside); return; }
+    const clear = e.target.closest('[data-clearside]');
+    if (clear) {
+      const m = marker(S.markerId);
+      const i = +clear.dataset.clearside;
+      edit('clear an end of ' + (nameOf(m, S.roomId) || 'a way'), () => { m.sides[i].marker = null; });
+      renderRooms(); renderRoomPanel();
     }
-    const cc = e.target.closest('[data-cutconn]');
-    if (cc) { if (S.roomId) setLink('conn', S.roomId, cc.dataset.cutconn, false); return; }
-    const us = e.target.closest('[data-undosame]');
-    if (us) {
-      const subject = linkSubject();
-      if (subject) restoreLink('same', subject, us.dataset.undosame);
-      return;
-    }
-    const uc = e.target.closest('[data-undoconn]');
-    if (uc) { if (S.roomId) restoreLink('conn', S.roomId, uc.dataset.undoconn); return; }
-    if (e.target.closest('#pickSame')) {
-      S.picking && S.picking.mode === 'same' ? cancelPick(true) : startPick('same');
-      return;
-    }
-    if (e.target.closest('#pickConn')) {
-      S.picking && S.picking.mode === 'conn' ? cancelPick(true) : startPick('conn');
-      return;
-    }
-    if (e.target.closest('#addConn')) openConnDialog();
   };
+  panel.onchange = e => {
+    const t = e.target;
+    const m = marker(S.markerId);
+    if (!m) return;
+    if (t.dataset.sidefield) {
+      const i = +t.dataset.side;
+      edit('rename a side', () => { m.sides[i][t.dataset.sidefield] = t.value; });
+      renderRoomPanel();
+      return;
+    }
+    const prop = t.dataset.prop;
+    if (!prop) return;
+    if (prop.startsWith('light.')) {
+      const bright = Number($('[data-prop="light.bright"]').value) || 0;
+      const dim = Number($('[data-prop="light.dim"]').value) || 0;
+      edit('light of ' + (nameOf(m, S.roomId) || 'marker'), () => {
+        m.light = (bright || dim) ? { bright, dim: Math.max(bright, dim) } : null;
+      });
+      renderRoomPanel();
+      return;
+    }
+    const value = t.type === 'checkbox' ? t.checked : t.value;
+    setField(S.markerId, prop, value, 'set ' + prop);
+    // the three portal flags constrain one another, so settle them together
+    if (prop === 'passage' || prop === 'lockable') {
+      const p = marker(S.markerId);
+      edit('tidy ' + prop, () => {
+        if (p.passage !== 'door') p.lockable = false;
+        if (p.passage === 'open') p.state = 'open';
+        else if (p.passage === 'barrier') p.state = 'closed';
+        if (p.state === 'locked' && !p.lockable) p.state = 'closed';
+      });
+      renderRoomPanel();
+    }
+  };
+  panel.oninput = e => { if (e.target.dataset.sidefield) return; };
+  panel.onkeydown = e => e.stopPropagation();
 
-  // ---- connect-to-an-area dialog ----
-  $('#connSearch').oninput = () => renderConnHits();
-  $('#connSearch').onkeydown = e => {
-    e.stopPropagation();
-    if (e.key !== 'Enter') return;
-    e.preventDefault();
-    const first = $('#connHits').querySelector('.hit:not(.on)');
-    if (first) first.click();
-  };
-  $('#connHits').onclick = e => {
-    const b = e.target.closest('[data-connto]');
-    if (!b || !S.roomId) return;
-    setLink('conn', S.roomId, b.dataset.connto, true);
-    renderConnHits();
-  };
-  $('#connCancel').onclick = () => $('#connDialog').close();
-  $('#connPick').onclick = () => { $('#connDialog').close(); startPick('conn'); };
-
-  // add-feature dialog
+  // ---- add a marker ----
   $('#addFeatureBtn').onclick = () => {
     if (!S.roomId) return;
-    $('#addRoomName').textContent = S.roomId;
+    $('#addRoomName').textContent = S.roomId + ' · ' + ((LEVELS.get(S.levelId) || {}).name || '');
     $('#addLabel').value = ''; $('#addNote').value = '';
     $('#addDialog').showModal();
     $('#addLabel').focus();
   };
   $('#addCancel').onclick = () => $('#addDialog').close();
   $('#addSave').onclick = () => {
-    const label = $('#addLabel').value.trim();
-    if (!label) { $('#addLabel').focus(); return; }
-    pushHistory('add "' + label + '"');
-    const list = ANN.customFeatures[S.roomId] ||= [];
-    const f = {
-      id: `${S.roomId}::c${Date.now().toString(36)}`,
-      type: $('#addType').value, label, note: $('#addNote').value.trim(), auto: false,
-    };
-    list.push(f);
-    save(); renderFeatures(); renderRooms();
+    const name = $('#addLabel').value.trim();
+    const kind = $('#addType').value;
+    const note = $('#addNote').value.trim();
+    if (!name) { $('#addLabel').focus(); return; }
+    let id;
+    edit('add "' + name + '"', () => {
+      id = kind.startsWith('portal:')
+        ? newPortal(S.roomId, kind.slice(7), name, note)
+        : newObject(S.roomId, kind, name, note);
+    });
     $('#addDialog').close();
-    selectFeature(f.id);
+    renderRooms();
+    selectMarker(id);
+    hint(`<b>${esc(name)}</b> added. Draw it on the map`
+      + (kind.startsWith('portal:') ? ', then set where it comes out.' : '.'));
   };
 
   // grid dialog
   $('#gridBtn').onclick = () => {
     syncGridDialog();
     $('#gridDialog').show();
-    // the dialog autofocuses its first number field, which would swallow the
-    // arrow keys that are meant to nudge the grid
     if (document.activeElement) document.activeElement.blur();
     canvas.focus();
   };
   $('#gridClose').onclick = () => $('#gridDialog').close();
-  for (const [sel, key] of [['#gridSize', 'size'], ['#gridFeet', 'feetPerSquare'], ['#gridOffX', 'offsetX'], ['#gridOffY', 'offsetY']]) {
+  for (const [sel, key] of [['#gridSize', 'size'], ['#gridFeet', 'feetPerSquare'],
+                            ['#gridOffX', 'offsetX'], ['#gridOffY', 'offsetY']]) {
     $(sel).oninput = e => {
       const v = parseFloat(e.target.value);
       if (isNaN(v)) return;
@@ -3435,7 +2710,16 @@ function wire() {
 }
 
 function buildAddTypes() {
-  $('#addType').innerHTML = TYPE_KEYS.map(k => `<option value="${k}">${TYPES[k].label}</option>`).join('');
+  $('#addType').innerHTML =
+    '<optgroup label="A thing in the room">'
+    + ['item', 'creature', 'trap', 'note', 'area']
+        .map(k => `<option value="${k}">${TYPES[k].label}</option>`).join('')
+    + '</optgroup><optgroup label="A way through">'
+    + [['portal:door', 'Door — opens and shuts'],
+       ['portal:open', 'Open way — archway, stair, boundary'],
+       ['portal:barrier', 'Barrier — window, slit, grate']]
+        .map(([v, t]) => `<option value="${v}">${t}</option>`).join('')
+    + '</optgroup>';
 }
 
 function hint(html) { $('#hint').innerHTML = html; }
@@ -3444,32 +2728,31 @@ function hint(html) { $('#hint').innerHTML = html; }
 //  markdown-ish renderer for the module text
 // ==================================================================
 function esc(s) {
-  return String(s == null ? '' : s).replace(/[&<>"']/g, c =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  return String(s ?? '').replace(/[&<>"]/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
 function mdToHtml(md) {
   const out = [];
-  let readBuf = [];
-  const flushRead = () => {
-    if (readBuf.length) { out.push('<div class="read">' + readBuf.join(' ') + '</div>'); readBuf = []; }
+  let read = [];
+  const flush = () => {
+    if (read.length) { out.push('<blockquote>' + read.join(' ') + '</blockquote>'); read = []; }
   };
-  for (let raw of md.split('\n')) {
-    let line = raw.trim();
-    if (!line) { flushRead(); continue; }
+  for (const raw of String(md || '').split('\n')) {
+    const line = raw.trim();
+    if (!line) { flush(); continue; }
     if (line.startsWith('!')) continue;
     if (line.startsWith('>>')) {
       const t = line.replace(/^>+/, '').trim();
-      if (t) readBuf.push(inline(t));
+      if (t) read.push(inline(t));
       continue;
     }
-    flushRead();
+    flush();
     if (/^\*\*.+\*\*$/.test(line)) { out.push('<h4>' + inline(line.slice(2, -2)) + '</h4>'); continue; }
     if (/^[*\-] /.test(line)) { out.push('<ul><li>' + inline(line.slice(2)) + '</li></ul>'); continue; }
-    if (/^\|/.test(line)) { out.push('<p>' + inline(line) + '</p>'); continue; }
     out.push('<p>' + inline(line) + '</p>');
   }
-  flushRead();
+  flush();
   return out.join('').replace(/<\/ul><ul>/g, '');
 }
 

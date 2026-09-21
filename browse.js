@@ -11,19 +11,6 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"]/g,
   c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-const TYPES = {
-  room:          { label: 'Room',        ico: '▢', color: '#8b6fe0' },
-  door:          { label: 'Door',        ico: '🚪', color: '#d9913f' },
-  'secret-door': { label: 'Secret door', ico: '◈',  color: '#d64fb0' },
-  stairs:        { label: 'Stairs',      ico: '≣',  color: '#4aa3e0' },
-  trap:          { label: 'Trap',        ico: '⚠',  color: '#e0553f' },
-  window:        { label: 'Window',      ico: '▤',  color: '#49c7c2' },
-  light:         { label: 'Light',       ico: '✦',  color: '#e7c453' },
-  item:          { label: 'Item',        ico: '◆',  color: '#63c07e' },
-  creature:      { label: 'Creature',    ico: '☠',  color: '#c2453f' },
-  wall:          { label: 'Wall',        ico: '▬',  color: '#b9b2cc' },
-  note:          { label: 'Note',        ico: '✎',  color: '#9a93b0' },
-};
 const OPEN = 0;
 
 let DATA = null, ANN = null;
@@ -49,16 +36,17 @@ let img = null, needsDraw = true;
 (async function boot() {
   const [d, a, packs] = await Promise.all([
     fetch('/castle-data.json').then(r => r.json()),
-    fetch('/api/annotations').then(r => r.json()),
+    fetch('/api/annotations-v2').then(r => r.json()),
     fetch('/api/map-packs').then(r => r.json()).catch(() => null),
   ]);
   DATA = d; ANN = a;
   if (packs && packs.packs) PACKS = packs;
   S.mapPack = pickPack(localStorage.getItem('cr.pack'));
-  ANN.marks ||= {}; ANN.customFeatures ||= {}; ANN.hiddenFeatures ||= []; ANN.renames ||= {};
+  ANN.markers ||= {};
   ANN.grids ||= {};
   DATA.levels.forEach(l => LEVELS.set(l.id, l));
   DATA.rooms.forEach(r => ROOMS.set(r.id, r));
+  reindex();
 
   buildPackSelect();
   wire();
@@ -71,257 +59,6 @@ let img = null, needsDraw = true;
   else await setLevel(DATA.levels[1].id);
 })();
 
-// ==================================================================
-//  the data, read the same way the editor writes it
-// ==================================================================
-const splitKey = k => {
-  const at = k.lastIndexOf('@');
-  const head = at < 0 ? k : k.slice(0, at);
-  const c = head.indexOf(':');
-  let id = head.slice(c + 1), inst = 1;
-  const h = id.lastIndexOf('#');
-  if (h > 0) { inst = +id.slice(h + 1) || 1; id = id.slice(0, h); }
-  return { kind: head.slice(0, c), id, inst, levelId: at < 0 ? null : k.slice(at + 1) };
-};
-
-function featuresOf(roomId) {
-  const r = ROOMS.get(roomId);
-  if (!r) return [];
-  const hidden = new Set(ANN.hiddenFeatures);
-  const auto = (r.features || []).filter(f => !hidden.has(f.id));
-  const custom = ANN.customFeatures[roomId] || [];
-  return auto.concat(custom).map(f => {
-    const renamed = ANN.renames[f.id];
-    return renamed ? Object.assign({}, f, { label: renamed }) : f;
-  });
-}
-
-function markMeta(key) {
-  const { kind, id } = splitKey(key);
-  if (kind === 'iwall') {
-    const roomId = id.split('~')[0];
-    return { type: 'wall', label: 'Wall inside ' + roomId, roomId };
-  }
-  if (kind === 'room') {
-    const r = ROOMS.get(id);
-    return { type: 'room', label: id + '. ' + (r ? r.name : ''), roomId: id };
-  }
-  const roomId = id.split('::')[0];
-  const f = featuresOf(roomId).find(x => x.id === id)
-        || (ROOMS.get(roomId)?.features || []).find(x => x.id === id);
-  return { type: f ? f.type : 'note', label: f ? f.label : id, note: f ? f.note : '', roomId };
-}
-
-const grid = levelId => ANN.grids[levelId || S.levelId]
-  || LEVELS.get(levelId || S.levelId).grid;
-
-function levelElevation(levelId) {
-  const l = LEVELS.get(levelId);
-  return (l && typeof l.elevationFeet === 'number') ? l.elevationFeet : 0;
-}
-
-/** The floor a mark stands on: its room's own elevation, else its sheet's. */
-function floorUnder(key, m) {
-  const r = ROOMS.get(markMeta(key).roomId);
-  if (r && typeof r.elevationFeet === 'number' && r.level === m.levelId) return r.elevationFeet;
-  return levelElevation(m.levelId);
-}
-
-function heightOf(key, m) {
-  m = m || ANN.marks[key];
-  if (!m) return null;
-  const h = m.height;
-  if (h && (typeof h.at === 'number' || typeof h.from === 'number' || typeof h.to === 'number')) {
-    return h;
-  }
-  return { at: floorUnder(key, m), assumed: true };
-}
-
-const ft = n => (Math.round(n * 10) / 10) + ' ft';
-function heightText(h) {
-  if (!h) return '';
-  if (typeof h.from === 'number' || typeof h.to === 'number') {
-    return ft(h.from ?? 0) + ' to ' + ft(h.to ?? 0);
-  }
-  return ft(h.at ?? 0);
-}
-
-const marksOnLevel = levelId =>
-  Object.entries(ANN.marks).filter(([, m]) => m && m.levelId === (levelId || S.levelId));
-
-/** Every mark for a room: its outline, its own markers, its inside walls. */
-function marksForRoom(roomId, levelId) {
-  const out = [];
-  for (const [k, m] of Object.entries(ANN.marks)) {
-    if (levelId && m.levelId !== levelId) continue;
-    const sk = splitKey(k);
-    if (sk.kind === 'room' && sk.id === roomId) out.push([k, m]);
-    else if (sk.kind === 'feat' && sk.id.split('::')[0] === roomId) out.push([k, m]);
-    else if (sk.kind === 'iwall' && sk.id.split('~')[0] === roomId) out.push([k, m]);
-  }
-  return out;
-}
-
-/** Which sheets a room is drawn on. */
-const sheetsOf = roomId => [...new Set(
-  Object.entries(ANN.marks)
-    .filter(([k]) => k.startsWith('room:') && splitKey(k).id === roomId)
-    .map(([, m]) => m.levelId))];
-
-// ==================================================================
-//  what connects to what
-// ==================================================================
-// The editor works this out and writes it onto each mark as `links`. The
-// reader just reads it, and describes the connection in plain words using the
-// marker's own type and label: a stair is a stair, a trapdoor says trapdoor.
-
-const PASSAGE_TYPES = new Set(['door', 'secret-door', 'stairs', 'window']);
-const PASSAGE_WORDS =
-  /trapdoor|trap door|ladder|chute|shaft|bridge|archway|portcullis|stair|steps|elevator|walkway|balcony|opening|doorway|hatch|teleport/i;
-
-/**
- * Every room a marker reaches. The editor works this out -- the rooms it stands
- * between, the rooms its label names, the far end of anything it has been tied
- * to as the same thing, less any pair you have said does not connect -- and
- * writes it on as links.reach. Nothing is worked out here.
- */
-const reaches = (key, m) =>
-  new Set(((m || ANN.marks[key] || {}).links || {}).reach || []);
-
-const WORDS = [
-  [/portcullis/i, 'portcullis'], [/trapdoor|trap door/i, 'trapdoor'],
-  [/ladder/i, 'ladder'], [/chute/i, 'chute'], [/bridge/i, 'bridge'],
-  [/spiral stair/i, 'spiral stair'], [/stair|steps/i, 'stairs'],
-  [/archway|arch\b/i, 'archway'], [/gaping|doorway/i, 'open doorway'],
-  [/shaft/i, 'shaft'], [/curtain/i, 'curtained way'],
-  [/secret door/i, 'secret door'], [/window/i, 'window'],
-  [/arrow slit/i, 'arrow slit'], [/barred|bars/i, 'barred way'],
-  [/elevator/i, 'elevator'], [/double doors?/i, 'double doors'], [/door/i, 'door'],
-];
-
-function howWord(meta) {
-  for (const [re, word] of WORDS) if (re.test(meta.label || '')) return word;
-  return (TYPES[meta.type] || TYPES.note).label.toLowerCase();
-}
-
-/**
- * The floor a room stands on, in feet, measured on a particular sheet. K18,
- * K20 and K21 are drawn on several, and each drawing is at a different height.
- */
-function roomFloor(roomId, levelId) {
-  const r = ROOMS.get(roomId);
-  if (!r) return { feet: 0, level: levelId || null };
-  const sheets = sheetsOf(roomId);
-  const level = (levelId && (sheets.includes(levelId) || r.level === levelId))
-    ? levelId : (r.level || sheets[0]);
-  const feet = (typeof r.elevationFeet === 'number' && r.level === level)
-    ? r.elevationFeet : levelElevation(level);
-  return { feet, level };
-}
-
-/**
- * Where a way out takes you: the sheet at the far end, and for anything with a
- * rise, whether it goes up or down and by how much. The label wins when it says
- * so itself, since the book knows about stairs that double back.
- */
-function whereTo(fromId, toId, label, onLevel) {
-  const a = roomFloor(fromId, onLevel);
-  // the far end is on this sheet if it is drawn here, otherwise on its own
-  const b = roomFloor(toId, sheetsOf(toId).includes(onLevel) ? onLevel : null);
-  const out = { sheet: b.level, sheetName: LEVELS.get(b.level)?.name || b.level,
-                sameSheet: a.level === b.level, rise: b.feet - a.feet, dir: '' };
-  // "up to K30 and down to K61" means different things for K30 and for K61, so
-  // look for a direction word attached to this destination before anything else
-  const txt = label || '';
-  const esc_ = toId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const DIRW = '(?:up|above|ascend\\w*|down|below|descend\\w*)';
-  // the nearest direction word before the room, with no other one in between
-  const near = new RegExp('\\b(' + DIRW + ')\\b(?:(?!\\b' + DIRW + '\\b)[^.;]){0,24}?\\b' + esc_ + '\\b', 'i');
-  const hit = near.exec(txt);
-  const word = w => /^(up|above|ascend)/i.test(w) ? 'up' : /^(down|below|descend)/i.test(w) ? 'down' : '';
-  const says = hit ? word(hit[1])
-             : /\b(up|above|ascend)\b/i.test(txt) && /\b(down|below|descend)\b/i.test(txt) ? ''
-             : /\b(up|above|ascend)\b/i.test(txt) ? 'up'
-             : /\b(down|below|descend)\b/i.test(txt) ? 'down' : '';
-  const measured = out.rise > 4 ? 'up' : out.rise < -4 ? 'down' : '';
-  out.dir = says || measured;
-  if (says && measured && says !== measured) out.rise = 0;   // the book knows better
-  return out;
-}
-
-/**
- * Every way out of a room.
- *
- * Nothing is worked out here. The editor derives connections once, from the
- * marks, the module text and your corrections, and writes the answer onto
- * every outline of the room as links.ways; this reads that list and puts it
- * into words. So what you see here is exactly what the editor's Connects-to
- * panel shows, and a connection that looks wrong is wrong in one place only.
- */
-function connectionsOf(roomId) {
-  const rows = [];
-  waysWarning();
-  const seen = new Set();
-  for (const [roomMark, rm] of Object.entries(ANN.marks)) {
-    const sk = splitKey(roomMark);
-    if (sk.kind !== 'room' || sk.id !== roomId) continue;
-    for (const w of (rm.links && rm.links.ways) || []) {
-      const sig = w.to + '|' + w.via + '|' + w.how;
-      if (seen.has(sig) || !ROOMS.has(w.to)) continue;
-      seen.add(sig);
-      const row = rowFor(roomId, w, roomMark, rm);
-      if (row) rows.push(row);
-    }
-  }
-  const order = { stairs: 0, door: 1, 'secret-door': 2, room: 3, window: 4 };
-  rows.sort((a, b) => (a.unmarked ? 1 : 0) - (b.unmarked ? 1 : 0)
-                   || (order[a.type] ?? 9) - (order[b.type] ?? 9)
-                   || a.to.localeCompare(b.to, undefined, { numeric: true }));
-  return rows;
-}
-
-/** An annotations file written before the editor worked connections out has no
- *  ways on it, and there is nothing here to fall back on by design. Say so once,
- *  rather than quietly showing every room as a dead end. */
-let _warned = false;
-function waysWarning() {
-  if (_warned) return;
-  _warned = true;
-  const any = Object.entries(ANN.marks)
-    .some(([k, m]) => k.startsWith('room:') && m.links && m.links.ways);
-  if (any) return;
-  const el = $('#crumb');
-  if (el) el.textContent = 'Open the editor once to work out the connections';
-  console.warn('No links.ways in the annotations: open the editor once and let it save.');
-}
-
-/** One way turned into a row: what kind of way it is, and where it comes out. */
-function rowFor(roomId, w, roomMark, rm) {
-  const say = (type, label, how, key, levelId, height, unmarked) => ({
-    to: w.to, key, levelId, type, label, how, height, unmarked: !!unmarked,
-    go: whereTo(roomId, w.to, label, S.levelId),
-  });
-  if (w.how === 'marker') {
-    const m = ANN.marks[w.via];
-    if (!m) return null;                       // the marker has since been deleted
-    const meta = markMeta(w.via);
-    return say(meta.type, meta.label, howWord(meta), w.via, m.levelId,
-               heightOf(w.via, m));
-  }
-  if (w.how === 'open') {
-    const m = ANN.marks[w.via] || rm;
-    return say('room', 'The two areas run together here', 'open boundary',
-               w.via, m.levelId, heightOf(w.via, m));
-  }
-  if (w.how === 'text') {
-    const owner = String(w.via || '').split('::')[0];
-    const f = featuresOf(owner).find(x => x.id === w.via);
-    if (!f) return null;
-    return say(f.type, f.label, howWord(f), null, null, null, true);
-  }
-  return say('room', 'Connected by hand in the editor', 'connection',
-             roomMark, rm.levelId, heightOf(roomMark, rm));
-}
 
 // ==================================================================
 //  library
@@ -376,6 +113,9 @@ function renderLibrary() {
 // ==================================================================
 //  the room panel
 // ==================================================================
+// The sidebar contract in SCHEMA.md, rendered from the indexes: the room, the
+// book, the things in it, and the ways in and out. The editor shows the same
+// four and adds controls; it does not show anything this does not.
 function renderRoom() {
   const r = ROOMS.get(S.roomId);
   if (!r) {
@@ -383,9 +123,8 @@ function renderRoom() {
     $('#roomBody').innerHTML = '<div class="emptyNote">Pick a room on the left.</div>';
     return;
   }
-  const here = marksForRoom(r.id, S.levelId);
-  const outline = here.find(([k]) => k.startsWith('room:'));
-  const h = outline ? heightOf(outline[0], outline[1]) : null;
+  const outline = areaItemOf(r.id, S.levelId);
+  const h = outline ? heightOf(outline) : null;
   const sheets = sheetsOf(r.id);
   const lv = LEVELS.get(S.levelId);
 
@@ -398,22 +137,20 @@ function renderRoom() {
       h.assumed ? ' <em>(floor)</em>' : ''}</span>`);
   }
   if (r.parent) pills.push(`<span class="pill">Part of <b>${esc(r.parent)}</b></span>`);
-  if (!outline) pills.push('<span class="pill">Not marked on this sheet</span>');
+  if (!outline) pills.push('<span class="pill">Not drawn on this sheet</span>');
 
   const title = r.name === r.id ? '' : r.name;      // the crypts are named by number
   $('#roomHead').innerHTML = `<h1><b>${esc(r.id)}</b>${esc(title)}</h1>
     <div class="meta">${pills.join('')}</div>`;
 
-  const conns = connectionsOf(r.id);
-  const hereFeet = roomFloor(r.id, S.levelId).feet;
-  const also = sheets.filter(x => x !== S.levelId)
-    .map(x => {
-      const feet = roomFloor(r.id, x).feet;
-      const rise = feet - hereFeet;
-      return { sheet: x, name: LEVELS.get(x)?.name || x, feet, rise,
-               dir: rise > 4 ? 'up' : rise < -4 ? 'down' : '' };
-    })
-    .sort((a, b) => b.feet - a.feet);
+  const here = outline ? objectFloor(marker(outline.id)) : levelElevation(S.levelId);
+  const also = sheets.filter(x => x !== S.levelId).map(x => {
+    const it = areaItemOf(r.id, x);
+    const feet = it ? objectFloor(marker(it.id)) : levelElevation(x);
+    const rise = feet - here;
+    return { sheet: x, name: (LEVELS.get(x) || {}).name || x, feet, rise,
+             dir: rise > 4 ? 'up' : rise < -4 ? 'down' : '' };
+  }).sort((a, b) => b.feet - a.feet);
 
   let html = '';
   html += `<div class="sect"><h2>The module</h2><div class="prose">${mdToHtml(r.text || '')}</div></div>`;
@@ -423,7 +160,7 @@ function renderRoom() {
       const arrow = a.dir === 'up' ? '↑' : a.dir === 'down' ? '↓' : '→';
       const rise = a.dir ? `${a.dir} ${Math.abs(a.rise)} ft` : 'same height';
       return `<button class="conn" data-sheet="${esc(a.sheet)}">
-        <span class="ico" style="color:${TYPES.room.color}">${TYPES.room.ico}</span>
+        <span class="ico" style="color:${TYPES.area.color}">${TYPES.area.ico}</span>
         <span class="where">
           <span class="to">${esc(a.name)}</span>
           <span class="trip${a.dir ? ' ' + a.dir : ''}">${esc(rise)}</span>
@@ -432,7 +169,28 @@ function renderRoom() {
         <span class="arrow">${arrow}</span></button>`;
     }).join('')}</div>`;
   }
-  html += `<div class="sect"><h2>Ways in and out</h2>${
+
+  const things = contentsOf(r.id);
+  const onSheet = esc(lv ? lv.name : S.levelId);
+  html += `<div class="sect"><h2>In this area <em>on ${onSheet}</em></h2>${
+    things.length ? '<div class="inv">' + things.map(o => {
+      const t = TYPES[o.type] || TYPES.note;
+      const bits = [];
+      if (o.height && !o.height.assumed) bits.push(heightText(o.height));
+      if (o.light) bits.push(`lit ${o.light.bright}/${o.light.dim} ft`);
+      if (o.count > 1) bits.push(o.count + ' on this sheet');
+      if (!o.placed) bits.push('not drawn yet');
+      return `<div class="invRow${o.placed ? '' : ' faint'}"${
+        o.key ? ` data-key="${esc(o.key)}"` : ''}>
+        <span class="ico" style="color:${t.color}">${t.ico}</span>
+        <span class="lbl">${esc(o.name)}${
+          o.description ? `<span class="note">${esc(o.description)}</span>` : ''}</span>
+        <span class="h">${esc(bits.join(' · '))}</span></div>`;
+    }).join('') + '</div>'
+    : '<div class="emptyNote" style="padding:2px">Nothing recorded on this sheet.</div>'}</div>`;
+
+  const conns = connectionsOf(r.id);
+  html += `<div class="sect"><h2>Ways in and out <em>of ${onSheet}</em></h2>${
     conns.length ? conns.map(c => {
       const t = TYPES[c.type] || TYPES.note;
       const room = ROOMS.get(c.to);
@@ -440,18 +198,24 @@ function renderRoom() {
       const arrow = g.dir === 'up' ? '↑' : g.dir === 'down' ? '↓' : '→';
       const rise = g.dir && Math.abs(g.rise) >= 5 ? `${g.dir} ${Math.abs(g.rise)} ft` : g.dir;
       const trip = [rise, g.sameSheet ? '' : g.sheetName].filter(Boolean).join(' · ');
-      return `<button class="conn${c.unmarked ? ' faint' : ''}" data-goroom="${esc(c.to)}"${
+      const where = c.to
+        ? `${esc(c.to)} <em>${esc(room && room.name !== c.to ? room.name : '')}</em>`
+        : '<em>Outside, or not yet said</em>';
+      return `<button class="conn${c.to ? '' : ' faint'}"${
+        c.to ? ` data-goroom="${esc(c.to)}"` : ''}${
         c.key ? ` data-key="${esc(c.key)}"` : ''}>
         <span class="ico" style="color:${t.color}">${t.ico}</span>
         <span class="where">
-          <span class="to">${esc(c.to)} <em>${esc(room && room.name !== c.to ? room.name : '')}</em>
-            <span class="kind">${esc(c.how)}</span></span>
+          <span class="to">${where}<span class="kind">${esc(c.how)}</span></span>
           ${trip ? `<span class="trip${g.dir ? ' ' + g.dir : ''}">${esc(trip)}</span>` : ''}
           <span class="how">${esc(c.label)}${
-            c.unmarked ? ' <em class="um">(from the text, not marked on a map)</em>' : ''}</span>
+            c.state ? ` &middot; ${esc(c.state)}` : ''}${
+            c.unmarked ? ' <em class="um">(described, not drawn on a map)</em>' : ''}</span>
+          ${c.to && c.farName && c.farName !== c.label
+            ? `<span class="how">From the far side: ${esc(c.farName)}</span>` : ''}
         </span>
-        <span class="arrow">${arrow}</span></button>`;
-    }).join('') : '<div class="emptyNote" style="padding:2px">Nothing marked yet.</div>'}</div>`;
+        <span class="arrow">${c.to ? arrow : ''}</span></button>`;
+    }).join('') : '<div class="emptyNote" style="padding:2px">No way in or out on this sheet.</div>'}</div>`;
 
   $('#roomBody').innerHTML = html;
   $('#roomBody').scrollTop = 0;
@@ -536,11 +300,14 @@ let FRAMES = null;
 function ringsInSquares(levelId) {
   const g = grid(levelId);
   const out = [];
-  for (const [k, m] of Object.entries(ANN.marks)) {
-    if (!k.startsWith('room:') || m.levelId !== levelId || m.shape.type !== 'area') continue;
-    for (const part of m.shape.parts) {
-      out.push({ id: splitKey(k).id,
-                 ring: part.ring.map(p => [(p[0] - g.offsetX) / g.size, (p[1] - g.offsetY) / g.size]) });
+  for (const [id, m] of Object.entries(ANN.markers)) {
+    if (!isObject(m) || m.objectType !== 'area') continue;
+    for (const shape of m.shapes || []) {
+      if (shape.level !== levelId || shape.type !== 'area') continue;
+      for (const part of shape.parts) {
+        out.push({ id: m.room,
+                   ring: part.ring.map(p => [(p[0] - g.offsetX) / g.size, (p[1] - g.offsetY) / g.size]) });
+      }
     }
   }
   // the walls-of-Ravenloft sheet is drawn portrait in the book, turned relative
@@ -771,18 +538,16 @@ function floorSlabs() {
           frame = { dx: median(shifts.map(s => s[0])), dy: median(shifts.map(s => s[1])) };
         } else {
           // a tower peak with nothing in common with the floors below: put it
-          // over whatever it connects to, which is the tower it caps
+          // over whatever it connects to, which is the tower it caps. A portal
+          // names both its ends, so this is a lookup: find a way out of these
+          // rooms that lands somewhere another sheet has already placed.
           const ids = new Set(cl.map(r => r.id));
           let target = null;
-          for (const [k, m] of Object.entries(ANN.marks)) {
-            const sk = splitKey(k);
-            if (sk.kind !== 'feat') continue;
-            const owner = sk.id.split('::')[0];
-            const links = m.links || {};
-            const touches = ids.has(owner) || (links.rooms || []).some(x => ids.has(x));
-            if (!touches) continue;
-            const out = [...reaches(k, m), owner]
-              .find(x => ref.has(x) && !ids.has(x) && ref.get(x).from !== l.id);
+          for (const m of Object.values(ANN.markers)) {
+            if (!isPortal(m)) continue;
+            const ends = roomsOf(m);
+            if (!ends.some(x => ids.has(x))) continue;
+            const out = ends.find(x => ref.has(x) && !ids.has(x) && ref.get(x).from !== l.id);
             if (out) { target = out; break; }
           }
           if (target) {
@@ -1164,8 +929,8 @@ function glideTo(scale, tx, ty, ms = 480) {
 const stopGlide = () => { camAnim = null; };
 
 function fitRoom(ms) {
-  const here = marksForRoom(S.roomId, S.levelId);
-  const pts = [].concat(...here.map(([, m]) => shapePoints(m.shape)));
+  const here = itemsForRoom(S.roomId, S.levelId);
+  const pts = [].concat(...here.map(it => shapePoints(it.shape)));
   if (!pts.length) { fitAll(); return; }
   const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
   const x0 = Math.min(...xs), x1 = Math.max(...xs);
@@ -1192,9 +957,7 @@ function zoomBy(f, cx, cy) {
 function shapePoints(sh) {
   if (!sh) return [];
   if (sh.type === 'area') return [].concat(...sh.parts.map(p => p.ring.map(q => [q[0], q[1]])));
-  if (sh.type === 'rect') return [[sh.x, sh.y], [sh.x + sh.w, sh.y], [sh.x + sh.w, sh.y + sh.h], [sh.x, sh.y + sh.h]];
-  if (sh.type === 'poly') return sh.pts.map(p => [p[0], p[1]]);
-  if (sh.type === 'seg') return [[sh.x1, sh.y1], [sh.x2, sh.y2]];
+  if (sh.type === 'line') return [[sh.x1, sh.y1], [sh.x2, sh.y2]];
   if (sh.type === 'point') return [[sh.x, sh.y]];
   return [];
 }
@@ -1240,10 +1003,7 @@ function hitShape(sh, p, tol) {
     return insideArea(sh, [p.x, p.y]);
   }
   if (sh.type === 'point') return Math.hypot(p.x - sh.x, p.y - sh.y) <= 13 / S.view.scale + tol;
-  if (sh.type === 'seg') return distToSeg(p, sh.x1, sh.y1, sh.x2, sh.y2) <= 9 / S.view.scale + tol;
-  if (sh.type === 'rect') return p.x >= sh.x - tol && p.x <= sh.x + sh.w + tol
-                            && p.y >= sh.y - tol && p.y <= sh.y + sh.h + tol;
-  if (sh.type === 'poly') return pointInRing([p.x, p.y], sh.pts);
+  if (sh.type === 'line') return distToSeg(p, sh.x1, sh.y1, sh.x2, sh.y2) <= 9 / S.view.scale + tol;
   return false;
 }
 
@@ -1268,13 +1028,13 @@ function draw() {
 
   // everything outside the room goes under a dark wash, and the room itself is
   // painted back in on top of it
-  const outline = marksForRoom(S.roomId, S.levelId).find(([k]) => k.startsWith('room:'));
-  if (outline && img) {
+  const outline = areaItemOf(S.roomId, S.levelId);
+  if (outline && outline.shape.type === 'area' && img) {
     ctx.fillStyle = 'rgba(8,7,12,.72)';
     ctx.fillRect(0, 0, lv.width, lv.height);
     ctx.save();
     ctx.beginPath();
-    for (const part of outline[1].shape.parts) {
+    for (const part of outline.shape.parts) {
       part.ring.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
       ctx.closePath();
     }
@@ -1284,23 +1044,19 @@ function draw() {
   }
   if (S.showGrid) drawGrid(lv);
 
-  const here = new Set(marksForRoom(S.roomId, S.levelId).map(([k]) => k));
+  const here = new Set(itemsForRoom(S.roomId, S.levelId).map(it => it.key));
+  const all = itemsOnLevel();
 
   // everything else on this sheet, quietly
-  for (const [k, m] of marksOnLevel()) {
-    if (here.has(k)) continue;
-    drawMark(k, m, 'quiet');
+  for (const it of all) if (!here.has(it.key)) drawItem(it, 'quiet');
+  // the room's outline, then everything standing in it
+  for (const it of all) {
+    if (here.has(it.key) && it.marker.objectType === 'area') drawItem(it, 'room');
   }
-  // the room, with its own markers on top
-  for (const [k, m] of marksOnLevel()) {
-    if (!here.has(k) || !k.startsWith('room:')) continue;
-    drawMark(k, m, 'room');
+  for (const it of all) {
+    if (here.has(it.key) && it.marker.objectType !== 'area') drawItem(it, 'feature');
   }
-  for (const [k, m] of marksOnLevel()) {
-    if (!here.has(k) || k.startsWith('room:')) continue;
-    drawMark(k, m, 'feature');
-  }
-  if (S.hover && ANN.marks[S.hover]) drawMark(S.hover, ANN.marks[S.hover], 'hover');
+  if (S.hover && ITEMS.has(S.hover)) drawItem(ITEMS.get(S.hover), 'hover');
   ctx.restore();
 }
 
@@ -1316,19 +1072,20 @@ function drawGrid(lv) {
   ctx.restore();
 }
 
-function drawMark(key, m, mode) {
-  const meta = markMeta(key);
+function drawItem(it, mode) {
+  const meta = markMeta(it.key);
   const t = TYPES[meta.type] || TYPES.note;
   const sc = S.view.scale;
-  const sh = m.shape;
+  const sh = it.shape;
   if (!sh) return;
+  const isArea = it.marker.objectType === 'area';
   const quiet = mode === 'quiet';
   const hot = mode === 'hover';
   ctx.globalAlpha = quiet ? 0.3 : 1;
   const color = hot ? '#ffffff' : t.color;
 
   if (sh.type === 'area') {
-    if (meta.type !== 'room') {
+    if (!isArea) {
       ctx.beginPath();
       for (const part of sh.parts) {
         part.ring.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
@@ -1357,28 +1114,28 @@ function drawMark(key, m, mode) {
       }
     }
     ctx.setLineDash([]);
-  } else if (sh.type === 'seg') {
+  } else if (sh.type === 'line') {
+    // a wall line drawn inside a room is scenery, not a thing to hover: thin
+    // and unlabelled. A portal drawn as a line is the doorway itself.
+    const wall = !!sh.wall && isObject(it.marker);
     ctx.lineCap = 'round';
-    ctx.lineWidth = (hot ? 12 : 9) / sc;
-    ctx.strokeStyle = color;
+    ctx.lineWidth = (wall ? 4 : (hot ? 12 : 9)) / sc;
+    ctx.strokeStyle = wall ? '#b9b2cc' : color;
+    // a secret way is dashed, the way the editor draws it
+    ctx.setLineDash(it.marker.secret ? [8 / sc, 6 / sc] : []);
     ctx.beginPath(); ctx.moveTo(sh.x1, sh.y1); ctx.lineTo(sh.x2, sh.y2); ctx.stroke();
+    ctx.setLineDash([]);
     ctx.lineCap = 'butt';
+    if (wall) { ctx.globalAlpha = 1; return; }
   } else if (sh.type === 'point') {
     const r = (hot ? 14 : 11) / sc;
     ctx.beginPath(); ctx.arc(sh.x, sh.y, r, 0, 7);
     ctx.fillStyle = color + 'dd'; ctx.fill();
     ctx.lineWidth = 2.5 / sc; ctx.strokeStyle = '#15121c'; ctx.stroke();
-  } else if (sh.type === 'rect' || sh.type === 'poly') {
-    const pts = shapePoints(sh);
-    ctx.beginPath();
-    pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
-    ctx.closePath();
-    ctx.fillStyle = color + '33'; ctx.fill();
-    ctx.lineWidth = 2.5 / sc; ctx.strokeStyle = color; ctx.stroke();
   }
 
   // a badge on each marker, so the map reads as a set of things to hover
-  if (!quiet && meta.type !== 'room' && meta.type !== 'wall') {
+  if (!quiet && !isArea) {
     const c = centroid(shapePoints(sh));
     const r = (hot ? 13 : 10) / sc;
     ctx.beginPath(); ctx.arc(c[0], c[1], r, 0, 7);
@@ -1391,15 +1148,15 @@ function drawMark(key, m, mode) {
     ctx.fillText(t.ico, c[0], c[1] + 0.5 / sc);
   }
 
-  if (meta.type === 'room' && !quiet) {
+  if (isArea && !quiet) {
     const c = centroid(shapePoints(sh));
     const px = 17 / sc;
     ctx.font = '700 ' + px + 'px Inter, Segoe UI, sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.lineWidth = 4 / sc; ctx.strokeStyle = 'rgba(10,9,14,.92)';
-    ctx.strokeText(splitKey(key).id, c[0], c[1]);
+    ctx.strokeText(it.marker.room, c[0], c[1]);
     ctx.fillStyle = '#fff';
-    ctx.fillText(splitKey(key).id, c[0], c[1]);
+    ctx.fillText(it.marker.room, c[0], c[1]);
   }
   ctx.globalAlpha = 1;
 }
@@ -1407,36 +1164,47 @@ function drawMark(key, m, mode) {
 // ==================================================================
 //  hovering and clicking the map
 // ==================================================================
-function markAt(wp) {
+function itemAt(wp) {
   const tol = 6 / S.view.scale;
-  const here = marksForRoom(S.roomId, S.levelId);
-  const pool = here.concat(marksOnLevel().filter(([k]) => !here.some(([j]) => j === k)));
-  // small things first, rooms last, and the selected room's own markers ahead
-  const score = ([k]) => (k.startsWith('room:') ? 2 : 0) + (here.some(([j]) => j === k) ? 0 : 1);
+  const here = new Set(itemsForRoom(S.roomId, S.levelId).map(it => it.key));
+  const pool = itemsOnLevel().slice();
+  // small things first, outlines last, and this room's own things ahead
+  const score = it => (it.marker.objectType === 'area' ? 2 : 0) + (here.has(it.key) ? 0 : 1);
   pool.sort((a, b) => score(a) - score(b));
-  for (const [k, m] of pool) if (hitShape(m.shape, wp, tol)) return k;
+  for (const it of pool) if (hitShape(it.shape, wp, tol)) return it.key;
   return null;
 }
 
 function tipFor(key) {
-  const m = ANN.marks[key];
+  const it = ITEMS.get(key);
+  if (!it) return '';
+  const m = it.marker;
   const meta = markMeta(key);
   const t = TYPES[meta.type] || TYPES.note;
-  const h = heightOf(key, m);
-  const dest = destinationOf(key);
-  const goes = dest ? [...reaches(key, m)]
-    .filter(x => x !== meta.roomId && ROOMS.has(x)) : [];
+  const h = heightOf(it);
   const room = ROOMS.get(meta.roomId);
-  const inst = splitKey(key).inst;
-  const count = Object.keys(ANN.marks).filter(k =>
-    splitKey(k).kind === 'feat' && splitKey(k).id === splitKey(key).id
-    && ANN.marks[k].levelId === m.levelId).length;
+  const count = (m.shapes || []).filter(s => s.level === it.level).length;
+  const which = count > 1 ? ` · ${it.i + 1} of ${count} here` : '';
+
+  let kind = t.label, across = '';
+  if (isPortal(m)) {
+    kind = howWord(m, meta.label);
+    const far = farSide(m, meta.roomId);
+    const farObj = marker(far.marker);
+    const state = stateWords(m);
+    if (state) kind += ' · ' + state;
+    across = isObject(farObj)
+      ? `Through to ${esc(farObj.room)}${far.name ? ' &mdash; ' + esc(far.name) : ''}`
+      : 'Does not lead anywhere recorded';
+  }
+  const dest = destinationOf(key);
   return `<div class="t"><span class="ico" style="color:${t.color}">${t.ico}</span>${esc(meta.label)}</div>
-    <div class="k">${esc(t.label)}${count > 1 ? ` · ${inst} of ${count} here` : ''} ·
-      ${esc(meta.roomId)}${room ? ' ' + esc(room.name) : ''}</div>
+    <div class="k">${esc(kind)}${which} ·
+      ${esc(meta.roomId || '')}${room ? ' ' + esc(room.name) : ''}</div>
     ${meta.note ? `<div class="n">${esc(meta.note)}</div>` : ''}
+    ${m.light ? `<div class="f">Lit ${m.light.bright} ft bright, ${m.light.dim} ft dim</div>` : ''}
     <div class="f">${esc(heightText(h))}${h.assumed ? ' (floor of this sheet)' : ''}</div>
-    ${goes.length ? `<div class="go">Goes to ${esc(goes.join(', '))} &mdash; click to follow</div>` : ''}`;
+    ${across ? `<div class="go">${across}${dest ? ' &mdash; click to follow' : ''}</div>` : ''}`;
 }
 
 function showTip(key, sx, sy) {
@@ -1460,19 +1228,19 @@ function showTip(key, sx, sy) {
  * door or a stair takes you through.
  */
 function destinationOf(key) {
-  const m = ANN.marks[key];
-  if (!m) return null;
-  const sk = splitKey(key);
-  const meta = markMeta(key);
-  if (sk.kind === 'room') return sk.id === S.roomId ? null : sk.id;
-  if (sk.kind === 'iwall') return null;
-  if (!PASSAGE_TYPES.has(meta.type) && !PASSAGE_WORDS.test(meta.label || '')) {
-    return meta.roomId !== S.roomId ? meta.roomId : null;   // a thing in another room
+  const it = ITEMS.get(key);
+  if (!it) return null;
+  const m = it.marker;
+  if (isPortal(m)) {
+    // the far side of the portal, from wherever you are standing
+    const from = roomsOf(m).includes(S.roomId) ? S.roomId : roomsOf(m)[0];
+    const far = marker(farSide(m, from).marker);
+    if (isObject(far) && far.room !== S.roomId) return far.room;
+    const near = marker(nearSide(m, from).marker);
+    return isObject(near) && near.room !== S.roomId ? near.room : null;
   }
-  const others = [...reaches(key, m)]
-    .filter(x => ROOMS.has(x) && x !== S.roomId);
-  if (meta.roomId !== S.roomId && ROOMS.has(meta.roomId)) others.unshift(meta.roomId);
-  return others[0] || null;
+  // an object takes you to its room, but only when you are not there already
+  return m.room !== S.roomId ? m.room : null;
 }
 
 // ==================================================================
@@ -1509,7 +1277,7 @@ function wire() {
 
   $('#roomBody').onclick = e => {
     const c = e.target.closest('[data-goroom]');
-    if (c) { selectRoom(c.dataset.goroom, ANN.marks[c.dataset.key]?.levelId); return; }
+    if (c) { selectRoom(c.dataset.goroom, ITEMS.get(c.dataset.key)?.level); return; }
     const sheet = e.target.closest('[data-sheet]');
     if (sheet) {
       setLevel(sheet.dataset.sheet, true).then(() => { renderRoom(); fitRoom(0); });
@@ -1517,7 +1285,7 @@ function wire() {
   };
   $('#roomBody').onmouseover = e => {
     const row = e.target.closest('[data-key]');
-    if (row && ANN.marks[row.dataset.key]) { S.hover = row.dataset.key; needsDraw = true; }
+    if (row && ITEMS.has(row.dataset.key)) { S.hover = row.dataset.key; needsDraw = true; }
   };
   $('#roomBody').onmouseout = e => {
     if (e.target.closest('[data-key]')) { S.hover = null; needsDraw = true; }
@@ -1544,10 +1312,10 @@ function wire() {
   canvas.addEventListener('pointerdown', e => {
     const panOnly = e.button === 1 || e.button === 2 || keys.has(' ');
     if (e.button === 1) e.preventDefault();           // no autoscroll cursor
-    const key = panOnly ? null : markAt(toWorld(...evPos(e)));
+    const key = panOnly ? null : itemAt(toWorld(...evPos(e)));
     if (key && e.button === 0) {
       const to = destinationOf(key);
-      if (to) { selectRoom(to, ANN.marks[key].levelId); return; }
+      if (to) { selectRoom(to, ITEMS.get(key).level); return; }
     }
     if (e.button !== 0 && !panOnly) return;
     stopGlide();
@@ -1564,7 +1332,7 @@ function wire() {
       return;
     }
     const [sx, sy] = evPos(e);
-    const key = markAt(toWorld(sx, sy));
+    const key = itemAt(toWorld(sx, sy));
     canvas.classList.toggle('pointing', !!(key && destinationOf(key)));
     if (key !== S.hover) { S.hover = key; needsDraw = true; }
     if (key) showTip(key, sx, sy); else $('#tip').hidden = true;
@@ -1618,7 +1386,7 @@ function wire() {
     if (!g) return;
     setLevel(g.dataset.sheet, true).then(() => {
       renderRoom();
-      const mine = marksForRoom(S.roomId, S.levelId).length;
+      const mine = itemsForRoom(S.roomId, S.levelId).length;
       mine ? fitRoom(0) : fitAll(0);                 // a new floor cuts, never glides
       renderFloors();
     });
@@ -1673,7 +1441,7 @@ function wire() {
     floorsTimer = setTimeout(renderFloors, 60);      // refit the stack to the panel
   }).observe($('#floorsPane'));
 
-  $('#legend').innerHTML = ['door', 'secret-door', 'stairs', 'window', 'trap', 'light', 'item', 'creature']
+  $('#legend').innerHTML = ['open', 'door', 'secret', 'barrier', 'trap', 'item', 'creature', 'note']
     .map(k => `<span><b style="color:${TYPES[k].color}">${TYPES[k].ico}</b> ${TYPES[k].label}</span>`)
     .join('') + '<span>solid outline: wall &middot; dashed: open</span>';
 
@@ -1692,12 +1460,11 @@ setInterval(zoomLabel, 200);
 setInterval(async () => {
   if (document.hidden) return;
   try {
-    const fresh = await fetch('/api/annotations', { cache: 'no-store' }).then(r => r.json());
+    const fresh = await fetch('/api/annotations-v2', { cache: 'no-store' }).then(r => r.json());
     if (!fresh || fresh.updated === ANN.updated) return;
     ANN = fresh;
-    ANN.marks ||= {}; ANN.customFeatures ||= {}; ANN.hiddenFeatures ||= [];
-    ANN.renames ||= {}; ANN.grids ||= {};
-    _idx.clear(); FRAMES = null;
+    ANN.markers ||= {}; ANN.grids ||= {};
+    reindex(); FRAMES = null;
     renderLibrary(); renderRoom(); needsDraw = true;
   } catch (_) { /* the server went away; keep showing what we have */ }
 }, 4000);

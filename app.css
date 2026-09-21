@@ -112,9 +112,10 @@ label.chk input { accent-color: var(--accent); margin-right: 4px; vertical-align
 #layout {
   --w-rooms: 258px;
   --w-feats: 320px;
+  --w-props: 300px;
   height: calc(100% - var(--h));
   display: grid;
-  grid-template-columns: var(--w-rooms) 5px var(--w-feats) 5px 1fr;
+  grid-template-columns: var(--w-rooms) 5px var(--w-feats) 5px var(--w-props) 5px 1fr;
   min-height: 0;
 }
 /* drag handles between the panes */
@@ -329,19 +330,17 @@ a.readerLink {
 }
 a.readerLink:hover { color: var(--text); border-color: #4a4363; }
 
-/* ---- links panel: the same thing marked twice, and what leads where ---- */
-.linkSplit {
-  border-top: 1px solid var(--line);
-  display: flex; flex-direction: column; min-height: 0; flex: none;
+/* ---- the panel that edits whatever is selected ---- */
+.propsTitle {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--dim); display: flex; align-items: center;
 }
-.linkSplit.open { flex: 1 1 40%; }
-.linkPanel { display: none; padding: 8px 10px 14px; font-size: 12px; }
-.linkSplit.open .linkPanel { display: block; }
-.textToggle .tally {
+.linkPanel { flex: 1; padding: 10px 12px 20px; font-size: 12px; }
+.propsTitle .tally {
   margin-left: 6px; padding: 1px 6px; border-radius: 999px;
   background: #2c2640; color: #cbb9ff; font-size: 10px; letter-spacing: 0;
 }
-.textToggle .tally:empty { display: none; }
+.propsTitle .tally:empty { display: none; }
 
 .linkGroup { margin-bottom: 14px; }
 .linkGroup > h4 {
@@ -400,3 +399,57 @@ canvas.picking { cursor: crosshair; }
 }
 .placeChip.tied { background: #2a2340; border-color: #6a55a8; }
 .placeChip:hover { border-color: var(--sel); color: #fff; }
+
+/* ------------------------------------------------------------------
+   the marker model: the room panel is scoped to one sheet, and the
+   panel that used to hold Links now edits whatever is selected
+   ------------------------------------------------------------------ */
+.groupHead {
+  position: sticky; top: 0; z-index: 1;
+  padding: 7px 10px 5px; background: var(--bg2);
+  border-bottom: 1px solid var(--line);
+  font-size: 10px; text-transform: uppercase; letter-spacing: .7px;
+  color: var(--dim); font-weight: 600;
+}
+.groupHead em {
+  font-style: normal; text-transform: none; letter-spacing: 0;
+  color: var(--dimmer); font-weight: 400;
+}
+.emptyNote.sm { padding: 10px 12px; }
+.featRow.faint .ico, .featRow.faint .flabel { opacity: .55; }
+.featRow.warn { border-left-color: var(--accent); }
+.unsaid { color: var(--accent); font-size: 11px; }
+
+.propHead { font-weight: 700; margin: 2px 0 4px; }
+.propHead.sub {
+  margin-top: 12px; font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .7px; color: var(--dim);
+}
+.propNote { color: var(--dimmer); margin-bottom: 8px; }
+.propRow { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: var(--dim); }
+.propRow.col { flex-direction: column; align-items: stretch; gap: 3px; }
+.propRow input[type=text], .propRow select, .propRow textarea {
+  flex: 1; min-width: 0; background: var(--bg3); color: var(--text);
+  border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px; font: inherit;
+}
+.propRow.flags { gap: 12px; flex-wrap: wrap; }
+.propRow.flags .chk { display: flex; align-items: center; gap: 4px; color: var(--dim); }
+.propRow.lightRow { gap: 6px; }
+
+.sideBox {
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 7px 8px; margin-bottom: 7px; background: #1a1724;
+}
+.sideBox.warn { border-color: #5a3f2a; }
+.sideWho { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; flex-wrap: wrap; }
+.sideWho b { color: var(--accent2); }
+.sideWho small { color: var(--dimmer); }
+.sideWho .ghost.xs {
+  margin-left: auto; font-size: 10px; padding: 1px 6px; border-radius: 4px;
+}
+.sideName, .sideNote {
+  width: 100%; background: var(--bg3); color: var(--text);
+  border: 1px solid var(--line); border-radius: 5px;
+  padding: 4px 6px; font: inherit; margin-bottom: 4px;
+}
+#canvas.picking { cursor: crosshair; }

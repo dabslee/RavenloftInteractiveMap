@@ -41,6 +41,10 @@ import webbrowser
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ANNOTATIONS = os.path.join(HERE, "castle-ravenloft-annotations.json")
+# the marker model in SCHEMA.md, written by migrate.py. The reader is on it
+# already; the editor still reads and writes the v1 file above, so the two
+# endpoints stay separate until the editor is ported too.
+ANNOTATIONS_V2 = os.path.join(HERE, "castle-ravenloft-annotations-v2.json")
 BACKUPS = os.path.join(HERE, "backups")
 EXPORTS = os.path.join(HERE, "exports")
 
@@ -105,9 +109,35 @@ def save_annotations(data):
     return data
 
 
-def _trim_backups(keep=40):
+def save_annotations_v2(data):
+    """The marker file, written the same careful way as the one above.
+
+    Its backups carry their own prefix and are trimmed on their own, so a busy
+    editing session on one model can never age out the other model's history.
+    """
+    with _lock:
+        data["version"] = 2
+        data["updated"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+        os.makedirs(BACKUPS, exist_ok=True)
+        if os.path.exists(ANNOTATIONS_V2):
+            stamp = time.strftime("%Y%m%d-%H%M")
+            bak = os.path.join(BACKUPS, "markers-%s.json" % stamp)
+            if not os.path.exists(bak):
+                try:
+                    shutil.copy2(ANNOTATIONS_V2, bak)
+                except Exception:
+                    pass
+                _trim_backups(prefix="markers-")
+        tmp = ANNOTATIONS_V2 + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=1, ensure_ascii=False)
+        os.replace(tmp, ANNOTATIONS_V2)
+    return data
+
+
+def _trim_backups(keep=40, prefix="annotations-"):
     try:
-        files = sorted(os.listdir(BACKUPS))
+        files = sorted(f for f in os.listdir(BACKUPS) if f.startswith(prefix))
         for f in files[:-keep]:
             os.remove(os.path.join(BACKUPS, f))
     except Exception:
@@ -245,6 +275,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._file(os.path.join(HERE, "browse.html"))
         if path == "/api/annotations":
             return self._json(200, load_annotations())
+        if path == "/api/annotations-v2":
+            if not os.path.exists(ANNOTATIONS_V2):
+                return self._json(404, {"error": "run migrate.py first"})
+            return self._file(ANNOTATIONS_V2)
         if path == "/api/map-packs":
             return self._json(200, list_map_packs(self.project_root))
         if path == "/api/info":
@@ -261,7 +295,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if rel.startswith("app/"):
                 rel = rel[4:]
             return self._file(self._safe(HERE, rel))
-        for name in ("app.js", "app.css", "browse.html", "browse.js", "browse.css",
+        for name in ("app.js", "app.css", "markers.js",
+                     "browse.html", "browse.js", "browse.css",
                      "castle-data.json", "favicon.ico"):
             if path == "/" + name:
                 return self._file(os.path.join(HERE, name))
@@ -269,7 +304,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_PUT(self):
         path = urllib.parse.urlparse(self.path).path
-        if path != "/api/annotations":
+        if path not in ("/api/annotations", "/api/annotations-v2"):
             return self._send(404, "not found")
         try:
             data = json.loads(self._body().decode("utf-8"))
@@ -277,7 +312,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self._json(400, {"error": str(exc)})
         if not isinstance(data, dict):
             return self._json(400, {"error": "expected an object"})
-        saved = save_annotations(data)
+        if path == "/api/annotations-v2":
+            if not isinstance(data.get("markers"), dict):
+                return self._json(400, {"error": "expected markers"})
+            saved = save_annotations_v2(data)
+        else:
+            saved = save_annotations(data)
         self._json(200, {"ok": True, "updated": saved["updated"]})
 
     def do_POST(self):

@@ -106,16 +106,21 @@
       <div class="filters" id="typeFilters"></div>
     </div>
     <div id="featureList" class="scroll"></div>
-    <div class="linkSplit" id="linkSplit">
-      <button id="linkToggle" class="textToggle">Links <span id="linkCount" class="tally"></span><span class="caret">&#9662;</span></button>
-      <div id="linkPanel" class="scroll linkPanel"></div>
-    </div>
     <div class="textSplit">
       <button id="textToggle" class="textToggle">Module text <span class="caret">▾</span></button>
       <div id="roomText" class="scroll roomText"></div>
     </div>
   </section>
   <div class="splitter" data-grip="feats" title="Drag to resize (double-click to reset)"></div>
+
+  <!-- ---------------- the selected marker ---------------- -->
+  <section id="propsPane" class="pane">
+    <div class="paneHead">
+      <div class="propsTitle">Selected <span id="linkCount" class="tally"></span></div>
+    </div>
+    <div id="linkPanel" class="scroll linkPanel"></div>
+  </section>
+  <div class="splitter" data-grip="props" title="Drag to resize (double-click to reset)"></div>
 
   <!-- ---------------- map ---------------- -->
   <section id="mapPane">
@@ -214,6 +219,7 @@
   </div>
 </dialog>
 
+<script src="/markers.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

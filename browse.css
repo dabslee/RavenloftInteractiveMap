@@ -275,3 +275,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 .flLead { stroke: #4a4368; stroke-width: 1; stroke-dasharray: 2 4; opacity: .9; }
 .flNote { padding: 8px 4px 0; color: var(--dimmer); font-size: 11px; line-height: 1.45; }
 #floorsBtn.on { color: var(--text); border-color: var(--sel); }
+
+/* the room panel lists only what is on the sheet in front of you; the heading
+   says which sheet that is */
+.sect h2 em {
+  font-style: normal; text-transform: none; letter-spacing: 0;
+  color: var(--dimmer); font-weight: 400; margin-left: 4px;
+}
+.invRow.faint .ico, .invRow.faint .lbl { opacity: .6; }
